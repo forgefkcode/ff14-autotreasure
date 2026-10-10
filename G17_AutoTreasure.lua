@@ -12,9 +12,6 @@ configs:
   MapItemId:
     default: 43557
     description: 未解讀 G17 地圖的物品 ID（已查好，取自 XIVAPI；0 = 未設定，INIT 會停止）
-  MapItemName:
-    default: "Timeworn Br'aaxskin Map"
-    description: 未解讀 G17 地圖的物品名稱（依客戶端語系）
   MaxMaps:
     default: 0
     description: 本次最多跑幾張，0 = 跑到沒圖
@@ -166,7 +163,7 @@ local Cond = {
 
 local Cfg = {}
 for _, k in ipairs({
-    "MapItemId", "MapItemName", "MaxMaps", "EnterDungeon", "StartWithDeciphered", "FlagWait", "AutoBuy", "SpareMaps",
+    "MapItemId", "MaxMaps", "EnterDungeon", "StartWithDeciphered", "FlagWait", "AutoBuy", "SpareMaps",
     "MaxMapPrice", "GilFloor", "MarketTerritoryId", "MarketAetheryte", "MarketX", "MarketY", "MarketZ",
     "MarketBoardName", "DoorChoice", "DigRadius", "PortalWait",
     "PotionHpPercent", "PotionItemName", "UseSprint", "MaxErrors", "ChestName", "DungeonChestName",
@@ -197,6 +194,7 @@ local Timeout = {
     MB_SEARCH       = 20,
     MB_LIST         = 15,
     MB_BUY          = 15,
+    MB_CLOSE        = 10,
     DUNGEON_INIT    = 30,
     DUNGEON_CHEST   = 20,
     DUNGEON_COMBAT  = 3600,  -- 副本限時 60 分鐘
@@ -349,6 +347,13 @@ end
 -- 市場板的物件名稱（EObjName 2000073，客戶端語系）
 function Api.MarketBoardObjectName()
     local ok, name = pcall(function() return tostring(Excel.GetRow("EObjName", 2000073).Singular) end)
+    if ok and name ~= nil and name ~= "" and name ~= "nil" then return name end
+    return nil
+end
+
+-- 物品名稱（客戶端語系），用來在市場板搜尋，避免手填名稱打錯而搜到別張圖
+function Api.ItemName(itemId)
+    local ok, name = pcall(function() return tostring(Excel.GetRow("Item", itemId).Name) end)
     if ok and name ~= nil and name ~= "" and name ~= "nil" then return name end
     return nil
 end
@@ -589,10 +594,25 @@ local function MapsToBuy()
     return target - Api.ItemCount(Cfg.MapItemId)
 end
 
+local MARKET_ADDONS = { "ItemHistory", "ItemSearchResult", "ItemSearch" }
+
+local function MarketOpen()
+    for _, name in ipairs(MARKET_ADDONS) do
+        if Api.AddonReady(name) then return true end
+    end
+    return false
+end
+
+-- 由內往外關市場視窗；每個視窗重複送 -1 直到真的消失（寫法同社群腳本 CloseAddon）
 local function CloseMarket()
-    Api.CloseAddon("ItemSearchResult")
-    yield("/wait 0.5")
-    Api.CloseAddon("ItemSearch")
+    for _, name in ipairs(MARKET_ADDONS) do
+        local tries = 0
+        while Api.AddonReady(name) and tries < 10 do
+            yield("/callback " .. name .. " true -1")
+            yield("/wait 0.3")
+            tries = tries + 1
+        end
+    end
 end
 
 local function MaybeDrinkPotion()
@@ -648,6 +668,12 @@ function Handlers.INIT()
     for _, k in ipairs({ "ChestName", "PortalName", "DoorName" }) do
         if Cfg[k] == "" then Log("提醒：" .. k .. " 未填，相關步驟會逾時") end
     end
+    Cfg.MapItemName = Api.ItemName(Cfg.MapItemId)
+    if Cfg.MapItemName == nil then
+        LogError("從遊戲資料查不到物品 " .. Cfg.MapItemId .. " 的名稱")
+        return "END"
+    end
+    Log("要買的地圖：" .. Cfg.MapItemName .. "（" .. Cfg.MapItemId .. "）")
     if Cfg.MarketBoardName == "" then
         Cfg.MarketBoardName = Api.MarketBoardObjectName() or "Market Board"
     end
@@ -942,6 +968,7 @@ function Handlers.MB_LIST()
         return "MB_FAIL"
     end
     State.mapCountBefore = Api.ItemCount(Cfg.MapItemId)
+    State.gilBefore = Api.Gil()
     State.buyPrice = price * count
     Log(string.format("購買 %d 張，單價 %d gil", count, price))
     Api.MarketBuyFirstListing()
@@ -956,11 +983,28 @@ function Handlers.MB_BUY()
             Api.CloseAddon("ItemSearchResult")   -- 回到搜尋結果，重新打開清單取得最新價格
             return "MB_SEARCH"
         end
+        return "MB_CLOSE"
+    end
+    -- 付了錢但這張圖沒增加 = 買到別的東西，立刻停止，避免繼續亂買
+    if Api.Gil() < State.gilBefore and Elapsed() > 3 then
+        LogError("付了 gil 但 " .. Cfg.MapItemName .. " 沒有增加，可能買錯物品，停止腳本")
         CloseMarket()
-        return "CHECK_MAP"
+        return "END"
     end
     if Api.ConfirmYes() then return nil end
     if TimedOut("MB_BUY") then return "ERROR" end
+end
+
+-- 關掉市場視窗後才能解讀；確認全部關閉再回 CHECK_MAP
+function Handlers.MB_CLOSE()
+    if MarketOpen() then
+        CloseMarket()
+        if TimedOut("MB_CLOSE") then return "ERROR" end
+        return nil
+    end
+    if Api.Condition(Cond.occupiedInEvent) then return nil end
+    yield("/wait 1")
+    return "CHECK_MAP"
 end
 
 -- 買不到（沒貨、太貴、gil 不足）：身上還有可用的圖就先去挖，否則結束

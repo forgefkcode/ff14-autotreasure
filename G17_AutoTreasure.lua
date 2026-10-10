@@ -32,13 +32,19 @@ configs:
     description: 買完後身上至少保留多少 gil
   MarketTerritoryId:
     default: 129
-    description: 買圖的城市地區 ID（129 = 利姆薩·羅敏薩下層甲板）
+    description: 買圖的城市地區 ID（129 = 利姆薩·羅敏薩下層甲板，傳送到該區大水晶）
   MarketAetheryte:
     default: ""
     description: 買圖城市的以太之光名稱（留空 = 依 MarketTerritoryId 自動從遊戲資料取）
-  MarketAethernet:
-    default: "市場"
-    description: 到城市後用 Lifestream 傳到哪個城內以太網（市場板旁邊；留空 = 不用）
+  MarketX:
+    default: -121
+    description: 傳送到大水晶後要走去的市場板位置 X
+  MarketY:
+    default: 18
+    description: 市場板位置 Y（高度）
+  MarketZ:
+    default: 12
+    description: 市場板位置 Z
   MarketBoardName:
     default: ""
     description: 市場板物件名稱（留空 = 自動從遊戲資料取）
@@ -161,7 +167,7 @@ local Cond = {
 local Cfg = {}
 for _, k in ipairs({
     "MapItemId", "MapItemName", "MaxMaps", "EnterDungeon", "StartWithDeciphered", "FlagWait", "AutoBuy", "SpareMaps",
-    "MaxMapPrice", "GilFloor", "MarketTerritoryId", "MarketAetheryte", "MarketAethernet",
+    "MaxMapPrice", "GilFloor", "MarketTerritoryId", "MarketAetheryte", "MarketX", "MarketY", "MarketZ",
     "MarketBoardName", "DoorChoice", "DigRadius", "PortalWait",
     "PotionHpPercent", "PotionItemName", "UseSprint", "MaxErrors", "ChestName", "DungeonChestName",
     "DoorName", "PortalName", "AetheryteUrqopacha", "AetheryteKozamauka", "AetheryteYakTel",
@@ -856,44 +862,43 @@ end
 ---------------------------------------------------------------- 買圖子流程（市場板）
 -- 目標庫存：1 張已解讀 + SpareMaps 張未解讀。流程：買圖 → 解讀 → 買圖 → 出發挖寶
 
--- 到市場板：傳送到城市 → Lifestream 城內以太網（市場）→ 關掉 TeleportTown 視窗 → vnavmesh 走過去
+-- 到市場板：傳送到城市大水晶 → vnavmesh 走到 MarketX/Y/Z → 開市場板
 function Handlers.MB_TRAVEL()
     if Busy() then return nil end
-    if Api.AddonReady("TeleportTown") then
-        yield("/callback TeleportTown false -1")
-        return nil
-    end
 
-    if Api.GetEntity(Cfg.MarketBoardName) == nil then
-        if Api.Territory() ~= Cfg.MarketTerritoryId then
-            if not State.sent then
-                local dest = Api.ResolveAetheryte(Cfg.MarketAetheryte, Cfg.MarketTerritoryId)
-                if dest == nil then
-                    LogError("查不到地區 " .. Cfg.MarketTerritoryId .. " 的以太之光，請填 MarketAetheryte")
-                    return "ERROR"
-                end
-                Api.NavStop()
-                Api.Teleport(dest)
-                State.sent = true
+    if Api.Territory() ~= Cfg.MarketTerritoryId then
+        if not State.sent then
+            local dest = Api.ResolveAetheryte(Cfg.MarketAetheryte, Cfg.MarketTerritoryId)
+            if dest == nil then
+                LogError("查不到地區 " .. Cfg.MarketTerritoryId .. " 的以太之光，請填 MarketAetheryte")
+                return "ERROR"
             end
-        elseif Cfg.MarketAethernet ~= "" and not State.aethernetSent then
-            Api.Teleport(Cfg.MarketAethernet)
-            State.aethernetSent = true
+            Api.NavStop()
+            Api.Teleport(dest)
+            State.sent = true
         end
         if TimedOut("MB_TRAVEL") then return "ERROR" end
         return nil
     end
 
-    Api.Target(Cfg.MarketBoardName)
-    local t = Entity.Target
-    if t ~= nil and t.DistanceTo ~= nil and t.DistanceTo <= 3 then
-        Api.NavStop()
-        Dismount()
-        return "MB_OPEN"
+    local spot = Vector3(Cfg.MarketX, Cfg.MarketY, Cfg.MarketZ)
+    local moveToSpot = function() Api.NavMoveTo(spot, false) end
+    if Distance2D(Api.PlayerPos(), spot) > 2 then
+        if not Api.NavRunning() then
+            Dismount()
+            moveToSpot()
+        end
+        if CheckStuck(moveToSpot) == "stuck" then return "ERROR" end
+        if TimedOut("MB_TRAVEL") then return "ERROR" end
+        return nil
     end
-    if not Api.NavRunning() then yield("/vnav movetarget") end
-    if CheckStuck(function() yield("/vnav movetarget") end) == "stuck" then return "ERROR" end
-    if TimedOut("MB_TRAVEL") then return "ERROR" end
+
+    Api.NavStop()
+    if Api.GetEntity(Cfg.MarketBoardName) == nil then
+        LogError("已到市場板位置，但附近找不到「" .. Cfg.MarketBoardName .. "」")
+        return "ERROR"
+    end
+    return "MB_OPEN"
 end
 
 function Handlers.MB_OPEN()
@@ -901,10 +906,9 @@ function Handlers.MB_OPEN()
         Api.MarketSearch(Cfg.MapItemName)
         return "MB_SEARCH"
     end
-    if not State.sent then
-        Api.Target(Cfg.MarketBoardName)
-        Api.InteractTarget()
-        State.sent = true
+    -- 市場板離站位太遠時，ApproachAndInteract 會先走近再互動
+    if not State.sent and not Api.Condition(Cond.occupiedInEvent) then
+        State.sent = ApproachAndInteract(Cfg.MarketBoardName)
     end
     if TimedOut("MB_OPEN") then return "ERROR" end
 end
@@ -1128,7 +1132,7 @@ local function Transition(next)
     State.current = next
     State.enteredAt = os.clock()
     State.lastPos, State.rePathed = nil, false
-    State.sent, State.lastClick, State.aethernetSent = false, nil, false
+    State.sent, State.lastClick = false, nil
 end
 
 math.randomseed(os.time())

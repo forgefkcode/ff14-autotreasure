@@ -189,8 +189,16 @@ function Api.Condition(id)
     return Svc.Condition[id] == true
 end
 
-function Api.PluginInstalled(name)
-    return IPC.IsInstalled(name)
+-- 直接查 Dalamud 已載入的插件，用 InternalName 比對。
+-- 不用 IPC.IsInstalled：它只認 SND 內建的 IPC 包裝（沒有 BossModReborn），
+-- 而且比對的是顯示名稱（Wrath 顯示為 "Wrath Combo"），兩個都會誤判成沒裝
+function Api.PluginInstalled(internalName)
+    for plugin in luanet.each(Svc.PluginInterface.InstalledPlugins) do
+        if plugin.InternalName == internalName and plugin.IsLoaded then
+            return true
+        end
+    end
+    return false
 end
 
 function Api.JobId()
@@ -515,7 +523,7 @@ function Handlers.INIT()
         if not Api.PluginInstalled(p) then table.insert(missing, p) end
     end
     if #missing > 0 then
-        LogError("缺少插件：" .. table.concat(missing, "、"))
+        LogError("缺少或未啟用的插件：" .. table.concat(missing, "、") .. "（請確認已在 /xlplugins 啟用）")
         return "END"
     end
     if Api.JobId() ~= WARRIOR_JOB_ID then

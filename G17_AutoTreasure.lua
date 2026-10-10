@@ -12,9 +12,12 @@ configs:
   MapItemId:
     default: 43557
     description: 未解讀 G17 地圖的物品 ID（已查好，取自 XIVAPI；0 = 未設定，INIT 會停止）
+  MaxRounds:
+    default: 0
+    description: 要刷幾輪（一輪 = 買齊 1 張已解讀 + 1 張未解讀並兩張都挖完），0 = 無限循環
   MaxMaps:
     default: 0
-    description: 本次最多跑幾張，0 = 跑到沒圖
+    description: 本次最多跑幾張，0 = 不限
   AutoBuy:
     default: true
     description: 圖不夠時自動到市場板買圖（維持身上 1 張已解讀 + 1 張未解讀）。事前記得在市場板把要買的地圖加入「我的最愛」
@@ -226,7 +229,7 @@ local Cond = {
 
 local Cfg = {}
 for _, k in ipairs({
-    "MapItemId", "MaxMaps", "EnterDungeon", "DecipheredItemId", "FlagWait", "AutoBuy",
+    "MapItemId", "MaxRounds", "MaxMaps", "EnterDungeon", "DecipheredItemId", "FlagWait", "AutoBuy",
     "BmrPreset", "CrossWorld", "DataCenter", "MaxMapPrice", "GilFloor", "MarketTerritoryId", "MarketAetheryte", "MarketX", "MarketY", "MarketZ",
     "FavoritesCallback", "MarketBoardName", "DoorChoice", "WalkRadius", "DigRadius", "PortalWait",
     "RouletteWait", "EnemySearchRange", "PotionHpPercent", "PotionItemName", "UseSprint", "MaxErrors", "ChestName", "DungeonChestName",
@@ -625,6 +628,13 @@ function Api.TargetNearestEnemy(maxDistance)
     return Entity.Target ~= nil
 end
 
+-- 選最近的敵人後按一下數字鍵 1：Wrath 自動循環有時不會自己起手，按一下帶動它開始
+function Api.EngageNearestEnemy(maxDistance)
+    if not Api.TargetNearestEnemy(maxDistance) then return false end
+    yield("/send KEY_1")
+    return true
+end
+
 -- maxDistance 內還有沒有敵人：先解除選取再 /targetenemy，選到且夠近才算（太遠的野外怪不算，並取消選取）
 function Api.AnyEnemyLeft(maxDistance)
     if not Api.TargetNearestEnemy(maxDistance) then return false end
@@ -978,7 +988,7 @@ local function CombatTick()
     end
     -- 戰鬥開始時選一次最近的敵人，之後交給 Wrath，不保持鎖定
     if not State.combatTargeted then
-        Api.TargetNearestEnemy()
+        Api.EngageNearestEnemy()
         State.combatTargeted = true
     end
     if not State.wrathOn then
@@ -1082,6 +1092,15 @@ function Handlers.CHECK_MAP()
         State.roundStarted = true
         if not State.roundBuying and ((not hasDeciphered and not hasUndeciphered)
             or (firstCheck and not (hasDeciphered and hasUndeciphered))) then
+            -- 上一輪的圖都挖完了：計數，達到 MaxRounds 就結束（0 = 無限循環）
+            if not firstCheck then
+                State.roundsDone = (State.roundsDone or 0) + 1
+                Log("完成第 " .. State.roundsDone .. " 輪")
+                if Cfg.MaxRounds > 0 and State.roundsDone >= Cfg.MaxRounds then
+                    Log("已達 MaxRounds（" .. Cfg.MaxRounds .. " 輪）")
+                    return "END"
+                end
+            end
             State.roundBuying = true
             State.worldChosen = false
             State.badWorlds = {}
@@ -1657,7 +1676,7 @@ function Handlers.DUNGEON_COMBAT()
     if not State.combatTargeted then
         if Elapsed() - (State.lastEnemyScan or -10) >= 1 then
             State.lastEnemyScan = Elapsed()
-            if Api.TargetNearestEnemy(Cfg.EnemySearchRange) then
+            if Api.EngageNearestEnemy(Cfg.EnemySearchRange) then
                 State.combatTargeted, State.enemySeen = true, true
                 Log("選取最近的敵人")
             elseif Elapsed() > Cfg.RouletteWait then
@@ -1792,8 +1811,8 @@ end
 function Handlers.END()
     StopAutomation()
     local stages = #State.stageLog > 0 and table.concat(State.stageLog, ",") or "無"
-    yield(string.format("/echo [G17] 結束：完成 %d 張，寶物庫 %d 次（到達關數 %s），錯誤 %d 次，買圖 %d 張共 %d gil，換伺服器 %d 次",
-        State.mapsDone, State.dungeonRuns, stages, State.errorCount, State.mapsBought or 0, State.gilSpent or 0, State.worldTrips or 0))
+    yield(string.format("/echo [G17] 結束：完成 %d 張，寶物庫 %d 次（到達關數 %s），錯誤 %d 次，買圖 %d 張共 %d gil，換伺服器 %d 次，完成 %d 輪",
+        State.mapsDone, State.dungeonRuns, stages, State.errorCount, State.mapsBought or 0, State.gilSpent or 0, State.worldTrips or 0, State.roundsDone or 0))
     return nil
 end
 

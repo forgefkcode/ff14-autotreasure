@@ -180,7 +180,7 @@ local Timeout = {
     DEAD             = 120,
     MB_TRAVEL        = 120,
     MB_OPEN          = 15,
-    MB_SEARCH        = 20,
+    MB_SEARCH        = 180,   -- 含等待手動搜尋的時間
     MB_LIST          = 15,
     MB_BUY           = 15,
     MB_CLOSE        = 10,
@@ -403,11 +403,46 @@ function Api.AddonNodeText(addon, ...)
     return tostring(node.Text)
 end
 
--- 搜尋參數取自 extrahase/SND_repo（2025-10 仍在更新）；舊版的 "0 -1 0 ... 100 100 34" 已失效。
--- 名稱不加引號：SND 的 /callback 解析器遇到 "單一字詞" 這種頭尾都有引號的參數會出錯
--- （把兩個名稱併成一個參數），不加引號時非數字的參數會直接當字串。名稱不能有空白。
-function Api.MarketSearch(itemName)
-    yield(string.format("/callback ItemSearch true 9 1 2 %s %s 5 6 7", itemName, itemName))
+-- SND 沒辦法把文字寫進市場板搜尋框（插件是呼叫遊戲內部的 SetText + RunSearch，Lua 碰不到；
+-- /callback ItemSearch 帶名稱也不會執行搜尋）。改成：名稱放進剪貼簿 → Ctrl+A、Ctrl+V、Enter。
+-- 注意：會覆蓋你剪貼簿裡原本的內容。
+
+-- 寫入剪貼簿：先用 PowerShell Set-Clipboard（任何執行緒都能用），失敗再試 Dalamud 的 ImGui。回傳用了哪種方法
+function Api.SetClipboard(text)
+    local ok = pcall(function()
+        luanet.load_assembly("System.Diagnostics.Process")
+        local script = "Set-Clipboard -Value '" .. text:gsub("'", "''") .. "'"
+        local bytes = luanet.import_type("System.Text.Encoding").Unicode:GetBytes(script)
+        local b64 = luanet.import_type("System.Convert").ToBase64String(bytes)
+        local psi = luanet.import_type("System.Diagnostics.ProcessStartInfo")()
+        psi.FileName = "powershell.exe"
+        psi.Arguments = "-NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand " .. b64
+        psi.CreateNoWindow = true
+        psi.UseShellExecute = false
+        local p = luanet.import_type("System.Diagnostics.Process").Start(psi)
+        if not p:WaitForExit(5000) or p.ExitCode ~= 0 then error("powershell failed") end
+    end)
+    if ok then return "PowerShell" end
+    ok = pcall(function()
+        luanet.load_assembly("Dalamud.Bindings.ImGui")
+        luanet.import_type("Dalamud.Bindings.ImGui.ImGui").SetClipboardText(text)
+    end)
+    if ok then return "ImGui" end
+    return nil
+end
+
+-- 在市場板搜尋框貼上名稱並按 Enter，再點第一筆結果
+function Api.TypeIntoSearch(text)
+    local method = Api.SetClipboard(text)
+    if method == nil then return nil end
+    yield("/send CONTROL+A")
+    yield("/wait 0.2")
+    yield("/send CONTROL+V")
+    yield("/wait 0.3")
+    yield("/send RETURN")
+    yield("/wait 1.5")
+    Api.MarketOpenFirstResult()
+    return method
 end
 
 function Api.MarketOpenFirstResult()
@@ -899,14 +934,33 @@ function Handlers.MB_OPEN()
     if TimedOut("MB_OPEN") then return "ERROR" end
 end
 
+-- 自動貼上搜尋 SEARCH_AUTO_TRIES 次都沒打開上架清單，就請使用者手動搜尋；腳本繼續等，並定時點第一筆結果
+local SEARCH_AUTO_TRIES = 2
+
 function Handlers.MB_SEARCH()
     if Api.AddonReady("ItemSearchResult") then return "MB_LIST" end
-    -- 每 4 秒重送一次搜尋，0.5 秒後點第 1 個結果，直到上架清單打開
-    if Elapsed() - (State.lastClick or -10) > 4 then
-        Api.MarketSearch(Cfg.MapItemName)
-        yield("/wait 0.5")
-        Api.MarketOpenFirstResult()
-        State.lastClick = Elapsed()
+    local tries = State.searchTries or 0
+    if tries < SEARCH_AUTO_TRIES then
+        if Elapsed() - (State.lastSearch or -10) > 6 then
+            local method = Api.TypeIntoSearch(Cfg.MapItemName)
+            if method == nil then
+                State.searchTries = SEARCH_AUTO_TRIES   -- 剪貼簿寫不進去，直接改手動
+            else
+                State.searchTries = tries + 1
+                Log("自動搜尋第 " .. State.searchTries .. " 次（剪貼簿：" .. method .. "）")
+            end
+            State.lastSearch = Elapsed()
+            State.lastClick = Elapsed()
+        end
+    else
+        if not State.manualPrompted then
+            Log("自動搜尋沒有結果，請手動在市場板輸入「" .. Cfg.MapItemName .. "」並搜尋，腳本會接著自動購買")
+            State.manualPrompted = true
+        end
+        if Elapsed() - (State.lastClick or -10) > 3 then
+            Api.MarketOpenFirstResult()
+            State.lastClick = Elapsed()
+        end
     end
     if TimedOut("MB_SEARCH") then return "ERROR" end
 end
@@ -1091,6 +1145,7 @@ local function Transition(next)
     State.enteredAt = os.clock()
     State.lastPos, State.rePathed = nil, false
     State.sent, State.lastClick = false, nil
+    State.searchTries, State.lastSearch, State.manualPrompted = 0, nil, false
 end
 
 while true do

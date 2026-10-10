@@ -61,8 +61,8 @@ configs:
     default: 12
     description: 市場板位置 Z
   FavoritesCallback:
-    default: ""
-    description: 切到市場板「我的最愛」分頁的 callback 參數（用 tools/MarketSearchTest.lua 測出後填入；空白 = 不切換）
+    default: "12 6"
+    description: 打開市場板「我的最愛」清單的 callback 參數（實測事件 12 會顯示我的最愛，後面的數字不影響；空白 = 不切換）
   MarketBoardName:
     default: ""
     description: 市場板物件名稱（留空 = 自動從遊戲資料取）
@@ -1443,6 +1443,9 @@ function Handlers.MB_SEARCH()
         yield("/callback ItemSearch true " .. Cfg.FavoritesCallback)
         State.favoritesTried = true
         Log("切到我的最愛")
+        yield("/wait 1")
+        idx = Api.FindInResults(Cfg.MapItemName)
+        if idx ~= nil then Api.MarketOpenResult(idx) end
         return nil
     end
 

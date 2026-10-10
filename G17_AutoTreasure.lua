@@ -1174,10 +1174,13 @@ end
 
 -- LOCATE：解讀後由 XivTreasureParty（設定「解碼後自動開地圖打旗標」）在藏寶點插旗；
 -- 沒裝或沒開該選項時，等使用者手動插旗（FlagWait 秒）。上一張圖用過的旗標不算，避免拿舊旗標重跑
+-- 旗標可以用：有旗標，而且不是上一張圖的舊旗標；或已等了 5 秒還在同一位置（新圖剛好在同一個藏寶點，
+-- XivTreasureParty 看到藏寶點沒變不會重插，旗標本來就該在原處）
 local function FlagIsFresh()
     if not Api.IsFlagSet() then return false end
     local last = State.lastFlag
-    return last == nil or Distance2D(Api.FlagPos(), last) > 1
+    if last == nil or Distance2D(Api.FlagPos(), last) > 1 then return true end
+    return Elapsed() > 5
 end
 
 function Handlers.LOCATE()
@@ -1191,7 +1194,11 @@ function Handlers.LOCATE()
         State.sent = true
     end
     if Elapsed() > Cfg.FlagWait then
-        LogError("等不到藏寶點旗標")
+        local ok, info = pcall(function()
+            return string.format("有旗標：%s，旗標地區：%s，目前地區：%s",
+                tostring(Api.IsFlagSet()), tostring(Api.FlagTerritory()), tostring(Api.Territory()))
+        end)
+        LogError("等不到藏寶點旗標（" .. (ok and info or tostring(info)) .. "）")
         return "ERROR"
     end
 end

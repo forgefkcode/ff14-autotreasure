@@ -1461,6 +1461,17 @@ function Handlers.DUNGEON_SPHERE()
         State.rouletteStarted = false
         return "DUNGEON_ROULETTE"
     end
+    if Api.Condition(Cond.inCombat) then return "DUNGEON_COMBAT" end
+    -- SphereName 沒填或找不到魔法球：請使用者手動點，腳本等最多 180 秒，之後的流程照常自動
+    if Cfg.SphereName == "" or Api.GetEntity(Cfg.SphereName) == nil then
+        if not State.manualPrompted then
+            Log(Cfg.SphereName == "" and "SphereName 未填，請手動點魔法球（腳本會接著自動處理）"
+                or ("找不到「" .. Cfg.SphereName .. "」，請確認 SphereName 或手動點魔法球"))
+            State.manualPrompted = true
+        end
+        if Elapsed() > 180 then return "ERROR" end
+        return nil
+    end
     if not Api.Condition(Cond.occupiedInEvent) then
         ApproachAndInteract(Cfg.SphereName)
     end

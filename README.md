@@ -17,7 +17,14 @@ SND（Something Need Doing）Lua 腳本，戰士單人循環挖寶與寶物庫�
 - SND（Lua 引擎）、vnavmesh、Wrath Combo、BossMod Reborn（只開閃避）
 - 建議：Globetrotter（`/tmap` 時自動在精確藏寶點插旗）
 
+## 自動買圖
+
+`AutoBuy` 開啟時，腳本維持身上 1 張已解讀 + `SpareMaps` 張未解讀：買圖 → 解讀 → 買圖 → 出發挖寶，挖完回來再補，一直循環。
+買不到（沒貨、超過 `MaxMapPrice`、gil 會低於 `GilFloor`）時，先用身上剩下的圖挖完再結束。
+
 ## 使用前必填
+
+- 共通：`MaxMapPrice`（每張圖最多付多少 gil）；`MarketBoardName` 依客戶端語系填
 
 - G17：`MapItemId`、`ChestName`、`PortalName`、`DoorName`；各地區傳送目的地依客戶端語系調整
 - G15：`MapItemId`、`ChestName`、`PortalName`、`SphereName`

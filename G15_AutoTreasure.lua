@@ -17,6 +17,24 @@ configs:
   MaxMaps:
     default: 0
     description: 本次最多跑幾張，0 = 跑到沒圖
+  AutoBuy:
+    default: true
+    description: 圖不夠時自動到市場板買圖（維持身上 1 張已解讀 + SpareMaps 張未解讀）
+  SpareMaps:
+    default: 1
+    description: 身上要保留幾張未解讀的備用圖
+  MaxMapPrice:
+    default: 0
+    description: 每張圖最多付多少 gil（AutoBuy 開啟時必填，0 = 未設定，INIT 會停止）
+  GilFloor:
+    default: 0
+    description: 買完後身上至少保留多少 gil
+  MarketAetheryte:
+    default: "Tuliyollal"
+    description: 買圖要傳送去的城市（/tp 參數）
+  MarketBoardName:
+    default: "Market Board"
+    description: 市場板物件名稱（依客戶端語系）
   EnterDungeon:
     default: true
     description: 出現傳送門時是否進入寶物庫
@@ -98,6 +116,12 @@ local Cfg = {
     MapItemName      = Config.Get("MapItemName"),
     MaxMaps          = Config.Get("MaxMaps"),
     EnterDungeon     = Config.Get("EnterDungeon"),
+    AutoBuy          = Config.Get("AutoBuy"),
+    SpareMaps        = Config.Get("SpareMaps"),
+    MaxMapPrice      = Config.Get("MaxMapPrice"),
+    GilFloor         = Config.Get("GilFloor"),
+    MarketAetheryte  = Config.Get("MarketAetheryte"),
+    MarketBoardName  = Config.Get("MarketBoardName"),
     DigRadius        = Config.Get("DigRadius"),
     PortalWait       = Config.Get("PortalWait"),
     PotionHpPercent  = Config.Get("PotionHpPercent"),
@@ -130,6 +154,11 @@ local Timeout = {
     PORTAL_CHECK     = Cfg.PortalWait,
     ENTER_DUNGEON    = 60,
     DEAD             = 120,
+    MB_TRAVEL        = 120,
+    MB_OPEN          = 15,
+    MB_SEARCH        = 20,
+    MB_LIST          = 15,
+    MB_BUY           = 15,
     DUNGEON_INIT     = 30,
     DUNGEON_SPHERE   = 15,
     DUNGEON_ROULETTE = 30,
@@ -291,6 +320,58 @@ function Api.DeclineGamble()
     return false
 end
 
+-- 市場板操作：callback 參數取自社群 SND 腳本（ShamelessEnd/SomethingNeedScripts），
+-- 原本是 SND v1 寫法；節點讀取改用 SND v2 的 Addons API。TODO 待實測
+function Api.Gil()
+    return Inventory.GetItemCount(1)
+end
+
+function Api.CloseAddon(name)
+    if Api.AddonReady(name) then yield("/callback " .. name .. " true -1") end
+end
+
+function Api.AddonNodeText(addon, ...)
+    local path = { ... }
+    local ok, node = pcall(function() return Addons.GetAddon(addon):GetNode(table.unpack(path)) end)
+    if not ok or node == nil or node.Text == nil then return "" end
+    return tostring(node.Text)
+end
+
+function Api.MarketSearch(itemName)
+    yield("/callback ItemSearch true 7 -1 0 -1 -1 -1 -1 -1")   -- 清空搜尋條件
+    yield("/wait 0.5")
+    yield(string.format('/callback ItemSearch true 0 -1 0 "%s" "%s" 100 100 34', itemName, itemName))
+end
+
+function Api.MarketOpenFirstResult()
+    yield("/callback ItemSearch true 5 0")
+end
+
+-- 回傳最便宜一筆的單價與數量；還在讀取回傳 nil；沒有上架回傳 false
+function Api.MarketFirstListing()
+    local price = tonumber((Api.AddonNodeText("ItemSearchResult", 1, 26, 4, 5):gsub("%D", "")))
+    local count = tonumber((Api.AddonNodeText("ItemSearchResult", 1, 26, 4, 6):gsub("%D", "")))
+    if price ~= nil and price > 0 and count ~= nil and count > 0 then return price, count end
+    local msg = Api.AddonNodeText("ItemSearchResult", 1, 5)
+    if msg:find("No items found") or msg:find("沒有") then return false end
+    return nil
+end
+
+function Api.MarketBuyFirstListing()
+    yield("/callback ItemSearchResult true 2 0")
+end
+
+-- TODO 待確認：開機時偵測身上是否已有解讀過的圖。有的話 /tmap 會打開地圖視窗，沒有則只跳錯誤訊息
+function Api.ProbeDecipheredMap()
+    Api.CloseAddon("AreaMap")
+    yield("/wait 0.5")
+    yield("/tmap")
+    yield("/wait 1.5")
+    local has = Api.AddonReady("AreaMap")
+    Api.CloseAddon("AreaMap")
+    return has
+end
+
 -- 使用者手動中止：目前在 SND 介面按停止即可（會直接終止腳本，不跑 END 統計）。
 -- TODO 若要軟停止（先收乾淨再結束），需找到 SND 可讀取的外部訊號後在這裡設定 State.stopRequested
 function Api.StopRequested()
@@ -403,6 +484,18 @@ local function ApproachAndInteract(name)
     return true
 end
 
+-- 還要買幾張未解讀圖才達到目標庫存
+local function MapsToBuy()
+    local target = Cfg.SpareMaps + (Api.HasDecipheredMap() and 0 or 1)
+    return target - Api.ItemCount(Cfg.MapItemId)
+end
+
+local function CloseMarket()
+    Api.CloseAddon("ItemSearchResult")
+    yield("/wait 0.5")
+    Api.CloseAddon("ItemSearch")
+end
+
 local function MaybeDrinkPotion()
     if Cfg.PotionHpPercent <= 0 or Cfg.PotionItemName == "" then return end
     if Api.HpPercent() < Cfg.PotionHpPercent then
@@ -433,6 +526,13 @@ function Handlers.INIT()
         LogError("未設定 MapItemId")
         return "END"
     end
+    if Cfg.AutoBuy and Cfg.MaxMapPrice <= 0 then
+        LogError("AutoBuy 開啟但未設定 MaxMapPrice")
+        return "END"
+    end
+    State.deciphered = Api.ProbeDecipheredMap()
+    Log("身上已解讀的圖：" .. (State.deciphered and "有" or "沒有")
+        .. "，未解讀：" .. Api.ItemCount(Cfg.MapItemId) .. " 張")
     for _, k in ipairs({ "ChestName", "PortalName", "SphereName" }) do
         if Cfg[k] == "" then Log("提醒：" .. k .. " 未填，相關步驟會逾時") end
     end
@@ -444,6 +544,14 @@ function Handlers.CHECK_MAP()
     if Cfg.MaxMaps > 0 and State.mapsDone >= Cfg.MaxMaps then
         Log("已達 MaxMaps")
         return "END"
+    end
+    -- 補圖：維持 1 張已解讀 + SpareMaps 張未解讀；買不到時本輪不再嘗試，用身上的圖繼續
+    if Cfg.AutoBuy and not State.buyBlocked and MapsToBuy() > 0 then
+        if not Api.HasDecipheredMap() and Api.ItemCount(Cfg.MapItemId) > 0 then
+            State.retries = 0
+            return "DECIPHER"   -- 先解讀手上的圖，再回來補備用圖
+        end
+        return "MB_TRAVEL"
     end
     if Api.HasDecipheredMap() then return "LOCATE" end
     if Api.ItemCount(Cfg.MapItemId) > 0 then
@@ -466,7 +574,7 @@ function Handlers.DECIPHER()
         State.deciphered = true
         State.decipherSent = false
         Log("解讀完成")
-        return "LOCATE"
+        return "CHECK_MAP"
     end
     if TimedOut("DECIPHER") then
         State.decipherSent = false
@@ -639,6 +747,103 @@ function Handlers.DEAD()
     if TimedOut("DEAD") then return "ERROR" end
 end
 
+---------------------------------------------------------------- 買圖子流程（市場板）
+-- 目標庫存：1 張已解讀 + SpareMaps 張未解讀。流程：買圖 → 解讀 → 買圖 → 出發挖寶
+
+function Handlers.MB_TRAVEL()
+    if Busy() then return nil end
+    if Api.GetEntity(Cfg.MarketBoardName) == nil then
+        if not State.sent then
+            Api.NavStop()
+            yield("/tp " .. Cfg.MarketAetheryte)
+            State.sent = true
+        end
+        if TimedOut("MB_TRAVEL") then return "ERROR" end
+        return nil
+    end
+    Api.Target(Cfg.MarketBoardName)
+    local t = Entity.Target
+    if t ~= nil and t.DistanceTo ~= nil and t.DistanceTo <= 3 then
+        Api.NavStop()
+        Dismount()
+        return "MB_OPEN"
+    end
+    if not Api.NavRunning() then yield("/vnav movetarget") end
+    if CheckStuck(function() yield("/vnav movetarget") end) == "stuck" then return "ERROR" end
+    if TimedOut("MB_TRAVEL") then return "ERROR" end
+end
+
+function Handlers.MB_OPEN()
+    if Api.AddonReady("ItemSearch") then
+        Api.MarketSearch(Cfg.MapItemName)
+        return "MB_SEARCH"
+    end
+    if not State.sent then
+        Api.Target(Cfg.MarketBoardName)
+        Api.InteractTarget()
+        State.sent = true
+    end
+    if TimedOut("MB_OPEN") then return "ERROR" end
+end
+
+function Handlers.MB_SEARCH()
+    if Api.AddonReady("ItemSearchResult") then return "MB_LIST" end
+    -- 搜尋結果需要時間載入；每 3 秒點一次第 1 個結果，直到清單打開
+    if Elapsed() - (State.lastClick or -10) > 3 and Elapsed() > 1.5 then
+        Api.MarketOpenFirstResult()
+        State.lastClick = Elapsed()
+    end
+    if TimedOut("MB_SEARCH") then return "ERROR" end
+end
+
+function Handlers.MB_LIST()
+    local price, count = Api.MarketFirstListing()
+    if price == nil then
+        if TimedOut("MB_LIST") then return "ERROR" end
+        return nil
+    end
+    if price == false then
+        LogError("市場板上沒有這張地圖")
+        return "MB_FAIL"
+    end
+    if price > Cfg.MaxMapPrice then
+        LogError(string.format("最便宜一張 %d gil，超過 MaxMapPrice %d", price, Cfg.MaxMapPrice))
+        return "MB_FAIL"
+    end
+    if Api.Gil() - price * count < Cfg.GilFloor then
+        LogError("gil 不足（會低於 GilFloor）")
+        return "MB_FAIL"
+    end
+    State.mapCountBefore = Api.ItemCount(Cfg.MapItemId)
+    State.buyPrice = price * count
+    Log(string.format("購買 %d 張，單價 %d gil", count, price))
+    Api.MarketBuyFirstListing()
+    return "MB_BUY"
+end
+
+function Handlers.MB_BUY()
+    if Api.ItemCount(Cfg.MapItemId) > State.mapCountBefore then
+        State.mapsBought = (State.mapsBought or 0) + Api.ItemCount(Cfg.MapItemId) - State.mapCountBefore
+        State.gilSpent = (State.gilSpent or 0) + State.buyPrice
+        if MapsToBuy() > 0 then
+            Api.CloseAddon("ItemSearchResult")   -- 回到搜尋結果，重新打開清單取得最新價格
+            return "MB_SEARCH"
+        end
+        CloseMarket()
+        return "CHECK_MAP"
+    end
+    if Api.ConfirmYes() then return nil end
+    if TimedOut("MB_BUY") then return "ERROR" end
+end
+
+-- 買不到（沒貨、太貴、gil 不足）：身上還有可用的圖就先去挖，否則結束
+function Handlers.MB_FAIL()
+    CloseMarket()
+    State.buyBlocked = true
+    if Api.HasDecipheredMap() or Api.ItemCount(Cfg.MapItemId) > 0 then return "CHECK_MAP" end
+    return "END"
+end
+
 ---------------------------------------------------------------- 寶物庫子流程
 
 function Handlers.DUNGEON_INIT()
@@ -725,6 +930,7 @@ function Handlers.ERROR()
     -- 清掉各狀態的暫存旗標
     State.decipherSent, State.tmapSent, State.teleportSent = false, false, false
     State.digSent, State.chestOpened, State.rouletteStarted = false, false, false
+    pcall(CloseMarket)
     if State.errors >= Cfg.MaxErrors then return "END" end
     if InDuty() then return "DUNGEON_EXIT" end
     return "CHECK_MAP"
@@ -733,8 +939,8 @@ end
 function Handlers.END()
     StopAutomation()
     local stages = #State.stageLog > 0 and table.concat(State.stageLog, ",") or "無"
-    yield(string.format("/echo [G15] 結束：完成 %d 張，寶物庫 %d 次（到達關數 %s），錯誤 %d 次",
-        State.mapsDone, State.dungeonRuns, stages, State.errorCount))
+    yield(string.format("/echo [G15] 結束：完成 %d 張，寶物庫 %d 次（到達關數 %s），錯誤 %d 次，買圖 %d 張共 %d gil",
+        State.mapsDone, State.dungeonRuns, stages, State.errorCount, State.mapsBought or 0, State.gilSpent or 0))
     return nil
 end
 
@@ -751,6 +957,7 @@ local function Transition(next)
     State.current = next
     State.enteredAt = os.clock()
     State.lastPos, State.rePathed = nil, false
+    State.sent, State.lastClick = false, nil
 end
 
 while true do
@@ -766,6 +973,7 @@ while true do
     -- 讀取中保護：只等待（DUNGEON_INIT / TRAVEL / ENTER_DUNGEON 自己處理讀取）
     local waitsOnLoading = State.current == "DUNGEON_INIT" or State.current == "TRAVEL"
         or State.current == "ENTER_DUNGEON" or State.current == "DUNGEON_EXIT"
+        or State.current == "MB_TRAVEL"
     if Api.Condition(Cond.betweenAreas) and not waitsOnLoading then
         yield("/wait 0.5")
     else

@@ -63,9 +63,6 @@ configs:
   EnterDungeon:
     default: true
     description: 出現傳送門時是否進入寶物庫
-  AscendHeight:
-    default: 100
-    description: 傳送到藏寶地區上坐騎後，先往上飛多高再開始找路
   WalkRadius:
     default: 15
     description: 飛到離旗標多近就下坐騎改走路（飛行停點不準，近距離走路比較準）
@@ -144,6 +141,19 @@ local GA = {
     dismount      = 23,
 }
 
+-- G15 的 8 個藏寶點的真正座標（含高度），取自 XIVAPI TreasureSpot（TreasureHuntRank 24）→ Level。
+-- 格式：{ 地區 ID, X, Y（高度）, Z }
+local TREASURE_SPOTS = {
+    { 961, 286.73, 6.97, 142.84 },
+    { 961, 53.96, 7.30, 158.08 },
+    { 961, -230.29, -44.65, 478.54 },
+    { 961, 378.37, 147.73, -196.19 },
+    { 961, 422.32, 150.71, -598.17 },
+    { 961, -423.94, 312.19, -635.18 },
+    { 961, -480.29, -33.78, 584.59 },
+    { 961, 784.15, 152.14, -145.09 },
+}
+
 local Cond = {
     dead            = 2,
     mounted         = 4,
@@ -175,7 +185,6 @@ local Cfg = {
     MarketZ          = Config.Get("MarketZ"),
     FavoritesCallback = Config.Get("FavoritesCallback"),
     MarketBoardName  = Config.Get("MarketBoardName"),
-    AscendHeight     = Config.Get("AscendHeight"),
     WalkRadius       = Config.Get("WalkRadius"),
     DigRadius        = Config.Get("DigRadius"),
     PortalWait       = Config.Get("PortalWait"),
@@ -231,11 +240,6 @@ local DIG_OFFSET       = 5
 local STUCK_INTERVAL   = 10
 local STUCK_DISTANCE   = 1
 local MAX_STAGES       = 5
-
--- 方案 (a)：內建 G15 八個藏寶點座標（Game8 地圖座標）。待填；目前未使用，藏寶點旗標由 XivTreasureParty 自動打或手動插。
--- 格式：{ x = 11.8, y = 33.1 }
-local TREASURE_SPOTS = {
-}
 
 -------------------------------------------------------------------------------
 -- 2. Api 轉接層（SND v2 API；標 TODO 者為「待確認事項」，實測後修正）
@@ -1072,9 +1076,25 @@ function Handlers.LOCATE()
     end
 end
 
--- 旗標只有平面座標（X、Z），高度不對；目的地在高處時直接飛過去會找不到路。
--- 用 vnavmesh 從旗標正上方往下找地面取得真正高度；找不到就維持目前高度飛到旗標正上方，到了下坐騎自己降落
+-- 旗標只有平面座標（X、Z），沒有高度。在 TREASURE_SPOTS 裡找跟旗標同地區、平面距離最近（30 以內）的藏寶點，
+-- 用它的真正座標（含高度）導航；找不到才退回用 vnavmesh 從旗標往下找地面
+local function MatchSpot()
+    local f, territory = Api.FlagPos(), Api.FlagTerritory()
+    local best, bestDist = nil, 30 * 30
+    for _, s in ipairs(TREASURE_SPOTS) do
+        if s[1] == territory then
+            local dx, dz = s[2] - f.X, s[4] - f.Z
+            local d = dx * dx + dz * dz
+            if d < bestDist then best, bestDist = s, d end
+        end
+    end
+    if best == nil then return nil end
+    return Vector3(best[2], best[3], best[4])
+end
+
 local function FlagTarget()
+    local spot = MatchSpot()
+    if spot ~= nil then return Vector3(spot.X, spot.Y + 0.5, spot.Z) end
     local f = Api.FlagPos()
     local floor = Api.PointOnFloor(f.X, f.Z)
     if floor ~= nil then return Vector3(floor.X, floor.Y + 1, floor.Z) end
@@ -1082,7 +1102,13 @@ local function FlagTarget()
 end
 
 local function FlyToFlag()
-    Api.NavMoveTo(FlagTarget(), true)
+    local target = FlagTarget()
+    if not State.spotLogged then
+        Log(MatchSpot() ~= nil and string.format("藏寶點座標 (%.1f, %.1f, %.1f)", target.X, target.Y, target.Z)
+            or "對不到內建的藏寶點座標，改用旗標位置")
+        State.spotLogged = true
+    end
+    Api.NavMoveTo(target, true)
 end
 
 function Handlers.TRAVEL()
@@ -1104,7 +1130,8 @@ function Handlers.TRAVEL()
         Log("已到藏寶地區，開啟 Wrath")
     end
 
-    local flag = Api.FlagPos()
+    -- 到達判斷用藏寶點真正座標（對不到才用旗標）
+    local flag = MatchSpot() or Api.FlagPos()
     if Distance2D(Api.PlayerPos(), flag) < Cfg.DigRadius and not Api.NavRunning() then
         State.digOffsetIdx = 0
         return "DIG"
@@ -1129,28 +1156,11 @@ function Handlers.TRAVEL()
                 return "DIG"
             end
             local f = Api.FlagPos()
-            Api.NavMoveTo(Api.PointOnFloor(f.X, f.Z) or Vector3(f.X, Api.PlayerPos().Y, f.Z), false)
+            Api.NavMoveTo(MatchSpot() or Api.PointOnFloor(f.X, f.Z) or Vector3(f.X, Api.PlayerPos().Y, f.Z), false)
             yield("/wait 0.5")
         end
         if TimedOut("TRAVEL") then return "ERROR" end
         return nil
-    end
-
-    -- 先上升：上坐騎後垂直往上飛 AscendHeight，最多 15 秒，再開始找路
-    if State.travelPhase ~= "fly" then
-        if State.travelPhase == nil then
-            if not Api.PlayerReady() then return nil end
-            if not Mount() then return nil end
-            local p = Api.PlayerPos()
-            Api.NavMoveTo(Vector3(p.X, p.Y + Cfg.AscendHeight, p.Z), true)
-            State.travelPhase, State.ascendAt = "ascend", os.clock()
-            Log("上升中")
-            return nil
-        end
-        if Api.NavRunning() and os.clock() - State.ascendAt < 15 then return nil end
-        Api.NavStop()
-        State.travelPhase = "fly"
-        State.lastPos = nil
     end
 
     if not Api.NavRunning() then
@@ -1725,6 +1735,7 @@ local function Transition(next)
     State.combatTargeted, State.lastEnemyScan, State.lastInCombat, State.enemySeen = false, nil, nil, false
     State.favoritesTried = false
     State.lastChestAt = nil
+    State.spotLogged = nil
     State.searchTries, State.lastSearch, State.manualPrompted = 0, nil, false
 end
 

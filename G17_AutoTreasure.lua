@@ -66,9 +66,6 @@ configs:
   DoorChoice:
     default: "Random"
     description: 寶物庫選門方式 Random / First（第一個找到的門）
-  AscendHeight:
-    default: 100
-    description: 傳送到藏寶地區上坐騎後，先往上飛多高再開始找路
   WalkRadius:
     default: 15
     description: 飛到離旗標多近就下坐騎改走路（飛行停點不準，近距離走路比較準）
@@ -170,6 +167,51 @@ local GA = {
     dismount      = 23,
 }
 
+-- G17 的 40 個（5 個地區各 8 個）藏寶點的真正座標（含高度），取自 XIVAPI TreasureSpot（TreasureHuntRank 28）→ Level。
+-- 格式：{ 地區 ID, X, Y（高度）, Z }
+local TREASURE_SPOTS = {
+    { 1190, -163.11, 16.42, -19.52 },
+    { 1190, -444.13, 28.52, -352.61 },
+    { 1190, -88.17, -17.88, 652.72 },
+    { 1190, 523.50, 16.09, 572.31 },
+    { 1190, 393.24, -15.02, -652.16 },
+    { 1190, -145.82, 15.42, -490.89 },
+    { 1190, 704.46, -14.48, -224.88 },
+    { 1190, 208.80, 4.96, -85.16 },
+    { 1191, 239.06, 115.76, 467.92 },
+    { 1191, -231.01, -5.06, 717.21 },
+    { 1191, -211.30, 28.82, 38.01 },
+    { 1191, -241.63, 21.28, -419.33 },
+    { 1191, 719.28, 147.96, 205.58 },
+    { 1191, -623.45, 20.95, -11.40 },
+    { 1191, 34.50, 92.38, -116.99 },
+    { 1191, 484.90, 131.38, -653.29 },
+    { 1187, 639.24, 123.36, 379.99 },
+    { 1187, -391.72, -45.41, -365.01 },
+    { 1187, 6.18, 10.24, 119.35 },
+    { 1187, 14.66, 23.86, 228.04 },
+    { 1187, -286.58, 69.40, 457.84 },
+    { 1187, -228.89, 62.63, 96.72 },
+    { 1187, 373.81, 63.80, 130.12 },
+    { 1187, 638.49, 109.35, 560.16 },
+    { 1188, 771.13, 41.22, -759.98 },
+    { 1188, 497.28, 10.70, -326.05 },
+    { 1188, -75.05, 20.30, -724.78 },
+    { 1188, -727.42, 61.38, -103.17 },
+    { 1188, -621.86, 129.51, 620.41 },
+    { 1188, -129.01, 118.70, 51.61 },
+    { 1188, 823.96, 23.36, 11.69 },
+    { 1188, 540.50, 122.53, 732.10 },
+    { 1189, 64.04, -164.63, 717.38 },
+    { 1189, -301.69, -169.47, 268.90 },
+    { 1189, -790.39, 31.85, -92.20 },
+    { 1189, 760.93, 35.58, -448.47 },
+    { 1189, 485.30, 11.24, 22.83 },
+    { 1189, -511.32, -153.80, 588.87 },
+    { 1189, 163.28, -159.93, -24.64 },
+    { 1189, 56.46, 8.21, -781.69 },
+}
+
 local Cond = {
     dead            = 2,
     mounted         = 4,
@@ -186,7 +228,7 @@ local Cfg = {}
 for _, k in ipairs({
     "MapItemId", "MaxMaps", "EnterDungeon", "DecipheredItemId", "FlagWait", "AutoBuy",
     "BmrPreset", "CrossWorld", "DataCenter", "MaxMapPrice", "GilFloor", "MarketTerritoryId", "MarketAetheryte", "MarketX", "MarketY", "MarketZ",
-    "FavoritesCallback", "MarketBoardName", "DoorChoice", "AscendHeight", "WalkRadius", "DigRadius", "PortalWait",
+    "FavoritesCallback", "MarketBoardName", "DoorChoice", "WalkRadius", "DigRadius", "PortalWait",
     "RouletteWait", "EnemySearchRange", "PotionHpPercent", "PotionItemName", "UseSprint", "MaxErrors", "ChestName", "DungeonChestName",
     "DoorName", "PortalName", "AetheryteUrqopacha", "AetheryteKozamauka", "AetheryteYakTel",
     "AetheryteShaaloani", "AetheryteHeritageFound", "EchoLogs",
@@ -1123,9 +1165,25 @@ function Handlers.LOCATE()
     end
 end
 
--- 旗標只有平面座標（X、Z），高度不對；目的地在高處時直接飛過去會找不到路。
--- 用 vnavmesh 從旗標正上方往下找地面取得真正高度；找不到就維持目前高度飛到旗標正上方，到了下坐騎自己降落
+-- 旗標只有平面座標（X、Z），沒有高度。在 TREASURE_SPOTS 裡找跟旗標同地區、平面距離最近（30 以內）的藏寶點，
+-- 用它的真正座標（含高度）導航；找不到才退回用 vnavmesh 從旗標往下找地面
+local function MatchSpot()
+    local f, territory = Api.FlagPos(), Api.FlagTerritory()
+    local best, bestDist = nil, 30 * 30
+    for _, s in ipairs(TREASURE_SPOTS) do
+        if s[1] == territory then
+            local dx, dz = s[2] - f.X, s[4] - f.Z
+            local d = dx * dx + dz * dz
+            if d < bestDist then best, bestDist = s, d end
+        end
+    end
+    if best == nil then return nil end
+    return Vector3(best[2], best[3], best[4])
+end
+
 local function FlagTarget()
+    local spot = MatchSpot()
+    if spot ~= nil then return Vector3(spot.X, spot.Y + 0.5, spot.Z) end
     local f = Api.FlagPos()
     local floor = Api.PointOnFloor(f.X, f.Z)
     if floor ~= nil then return Vector3(floor.X, floor.Y + 1, floor.Z) end
@@ -1133,7 +1191,13 @@ local function FlagTarget()
 end
 
 local function FlyToFlag()
-    Api.NavMoveTo(FlagTarget(), true)
+    local target = FlagTarget()
+    if not State.spotLogged then
+        Log(MatchSpot() ~= nil and string.format("藏寶點座標 (%.1f, %.1f, %.1f)", target.X, target.Y, target.Z)
+            or "對不到內建的藏寶點座標，改用旗標位置")
+        State.spotLogged = true
+    end
+    Api.NavMoveTo(target, true)
 end
 
 function Handlers.TRAVEL()
@@ -1156,7 +1220,8 @@ function Handlers.TRAVEL()
         Log("已到藏寶地區，開啟 Wrath")
     end
 
-    local flag = Api.FlagPos()
+    -- 到達判斷用藏寶點真正座標（對不到才用旗標）
+    local flag = MatchSpot() or Api.FlagPos()
     if Distance2D(Api.PlayerPos(), flag) < Cfg.DigRadius and not Api.NavRunning() then
         State.digOffsetIdx = 0
         return "DIG"
@@ -1181,28 +1246,11 @@ function Handlers.TRAVEL()
                 return "DIG"
             end
             local f = Api.FlagPos()
-            Api.NavMoveTo(Api.PointOnFloor(f.X, f.Z) or Vector3(f.X, Api.PlayerPos().Y, f.Z), false)
+            Api.NavMoveTo(MatchSpot() or Api.PointOnFloor(f.X, f.Z) or Vector3(f.X, Api.PlayerPos().Y, f.Z), false)
             yield("/wait 0.5")
         end
         if TimedOut("TRAVEL") then return "ERROR" end
         return nil
-    end
-
-    -- 先上升：上坐騎後垂直往上飛 AscendHeight，最多 15 秒，再開始找路
-    if State.travelPhase ~= "fly" then
-        if State.travelPhase == nil then
-            if not Api.PlayerReady() then return nil end
-            if not Mount() then return nil end
-            local p = Api.PlayerPos()
-            Api.NavMoveTo(Vector3(p.X, p.Y + Cfg.AscendHeight, p.Z), true)
-            State.travelPhase, State.ascendAt = "ascend", os.clock()
-            Log("上升中")
-            return nil
-        end
-        if Api.NavRunning() and os.clock() - State.ascendAt < 15 then return nil end
-        Api.NavStop()
-        State.travelPhase = "fly"
-        State.lastPos = nil
     end
 
     if not Api.NavRunning() then
@@ -1768,6 +1816,7 @@ local function Transition(next)
     State.combatTargeted, State.lastEnemyScan, State.lastInCombat, State.enemySeen = false, nil, nil, false
     State.favoritesTried = false
     State.lastChestAt = nil
+    State.spotLogged = nil
     State.searchTries, State.lastSearch, State.manualPrompted = 0, nil, false
 end
 

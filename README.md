@@ -24,9 +24,10 @@ SND（Something Need Doing）Lua 腳本，戰士單人循環挖寶與寶物庫�
 
 ## 使用前必填
 
-- 共通：`MaxMapPrice`（每張圖最多付多少 gil）；`MarketBoardName` 依客戶端語系填
+- 共通：`MaxMapPrice`（每張圖最多付多少 gil）
+- 以太之光、市場板名稱留空即可，腳本會從遊戲資料自動取客戶端語系的名稱；買圖城市預設利姆薩·羅敏薩（`MarketTerritoryId` 129，城內以太網「市場」）
 
-- G17：`ChestName`、`PortalName`、`DoorName`；各地區傳送目的地依客戶端語系調整
+- G17：`ChestName`、`PortalName`、`DoorName`；
 - G15：`ChestName`、`PortalName`、`SphereName`
 
 ## 狀態

@@ -30,12 +30,18 @@ configs:
   GilFloor:
     default: 0
     description: 買完後身上至少保留多少 gil
+  MarketTerritoryId:
+    default: 129
+    description: 買圖的城市地區 ID（129 = 利姆薩·羅敏薩下層甲板）
   MarketAetheryte:
-    default: "Tuliyollal"
-    description: 買圖要傳送去的以太之光（Lifestream，依客戶端語系填）
+    default: ""
+    description: 買圖城市的以太之光名稱（留空 = 依 MarketTerritoryId 自動從遊戲資料取）
+  MarketAethernet:
+    default: "市場"
+    description: 到城市後用 Lifestream 傳到哪個城內以太網（市場板旁邊；留空 = 不用）
   MarketBoardName:
-    default: "Market Board"
-    description: 市場板物件名稱（依客戶端語系）
+    default: ""
+    description: 市場板物件名稱（留空 = 自動從遊戲資料取）
   StartWithDeciphered:
     default: false
     description: 啟動時身上已經有解讀過的圖（偵測不到時用這個強制指定）
@@ -76,19 +82,15 @@ configs:
     default: ""
     description: 傳送門物件名稱（待填）
   AetheryteName:
-    default: "Anagnorisis"
-    description: 厄爾庇斯的以太之光（Lifestream，依客戶端語系填）
-  DecipherCommand:
-    default: "/ac Decipher"
-    description: 解讀指令（中文客戶端可能是 /ac 解讀）
-  DigCommand:
-    default: "/ac Dig"
-    description: 挖寶指令（中文客戶端可能是 /ac 挖掘）
+    default: ""
+    description: 厄爾庇斯的以太之光名稱（留空 = 自動從遊戲資料取）
   EchoLogs:
     default: "All"
     description: 日誌層級 All / Errors / None
 [[End Metadata]]
 --]=====]
+
+import("System.Numerics")
 
 --[[
 結構
@@ -105,6 +107,15 @@ configs:
 
 local WARRIOR_JOB_ID   = 21
 local ELPIS_TERRITORY  = 961
+
+-- 一般動作 ID（GeneralAction 表，取自 XIVAPI），用 ID 執行不受客戶端語系影響
+local GA = {
+    sprint        = 4,
+    mountRoulette = 9,
+    decipher      = 19,
+    dig           = 20,
+    dismount      = 23,
+}
 
 local Cond = {
     dead            = 2,
@@ -129,7 +140,9 @@ local Cfg = {
     SpareMaps        = Config.Get("SpareMaps"),
     MaxMapPrice      = Config.Get("MaxMapPrice"),
     GilFloor         = Config.Get("GilFloor"),
+    MarketTerritoryId = Config.Get("MarketTerritoryId"),
     MarketAetheryte  = Config.Get("MarketAetheryte"),
+    MarketAethernet  = Config.Get("MarketAethernet"),
     MarketBoardName  = Config.Get("MarketBoardName"),
     DigRadius        = Config.Get("DigRadius"),
     PortalWait       = Config.Get("PortalWait"),
@@ -142,8 +155,6 @@ local Cfg = {
     DungeonChestName = Config.Get("DungeonChestName"),
     PortalName       = Config.Get("PortalName"),
     AetheryteName    = Config.Get("AetheryteName"),
-    DecipherCommand  = Config.Get("DecipherCommand"),
-    DigCommand       = Config.Get("DigCommand"),
     EchoLogs         = Config.Get("EchoLogs"),
 }
 if Cfg.DungeonChestName == nil or Cfg.DungeonChestName == "" then
@@ -297,9 +308,28 @@ function Api.NavMoveTo(pos, fly)
     IPC.vnavmesh.PathfindAndMoveTo(pos, fly)
 end
 
--- TODO 待確認：停止指令名稱
 function Api.NavStop()
-    yield("/vnav stop")
+    if Api.NavRunning() then IPC.vnavmesh.Stop() end
+end
+
+-- 從遊戲資料取得地區主要以太之光的名稱（自動是客戶端語系），寫法取自 pot0to 的 SND 腳本
+function Api.AetheryteName(territoryId)
+    local ok, name = pcall(function()
+        return tostring(Excel.GetRow("TerritoryType", territoryId).Aetheryte.PlaceName.Name)
+    end)
+    if ok and name ~= nil and name ~= "" and name ~= "nil" then return name end
+    return nil
+end
+
+-- 市場板的物件名稱（EObjName 2000073，客戶端語系）
+function Api.MarketBoardObjectName()
+    local ok, name = pcall(function() return tostring(Excel.GetRow("EObjName", 2000073).Singular) end)
+    if ok and name ~= nil and name ~= "" and name ~= "nil" then return name end
+    return nil
+end
+
+function Api.GeneralAction(id)
+    Actions.ExecuteGeneralAction(id)
 end
 
 -- 傳送一律交給 Lifestream（/tp 是 Teleporter 插件的指令，沒裝就不存在）
@@ -476,18 +506,24 @@ end
 
 local function Mount()
     if Api.Condition(Cond.mounted) then return end
-    yield('/gaction "Mount Roulette"')
+    Api.GeneralAction(GA.mountRoulette)
     yield("/wait 3")
 end
 
 local function Dismount()
     if not Api.Condition(Cond.mounted) then return end
-    yield('/gaction "Dismount"')
+    Api.GeneralAction(GA.dismount)
     yield("/wait 1.5")
     if Api.Condition(Cond.flying) or Api.Condition(Cond.mounted) then
-        yield('/gaction "Dismount"')
+        Api.GeneralAction(GA.dismount)   -- 飛行中第一次只會降落
         yield("/wait 1.5")
     end
+end
+
+-- 設定有填就用設定，留空就從遊戲資料取該地區的以太之光名稱
+function Api.ResolveAetheryte(configured, territoryId)
+    if configured ~= nil and configured ~= "" then return configured end
+    return Api.AetheryteName(territoryId)
 end
 
 -- 選取並走到物件旁互動；回傳 true 表示已送出互動
@@ -556,6 +592,9 @@ function Handlers.INIT()
     for _, k in ipairs({ "ChestName", "PortalName", "SphereName" }) do
         if Cfg[k] == "" then Log("提醒：" .. k .. " 未填，相關步驟會逾時") end
     end
+    if Cfg.MarketBoardName == "" then
+        Cfg.MarketBoardName = Api.MarketBoardObjectName() or "Market Board"
+    end
     if not Api.PluginInstalled("XivTreasureParty") then
         Log("提醒：沒偵測到 XivTreasureParty，解讀後需手動插旗")
     end
@@ -587,7 +626,7 @@ end
 
 function Handlers.DECIPHER()
     if not State.decipherSent then
-        yield(Cfg.DecipherCommand)
+        Api.GeneralAction(GA.decipher)
         State.decipherSent = true
         return nil
     end
@@ -642,7 +681,7 @@ function Handlers.TRAVEL()
 
     if Api.Territory() ~= ELPIS_TERRITORY then
         if not State.teleportSent then
-            Api.Teleport(Cfg.AetheryteName)
+            Api.Teleport(Api.ResolveAetheryte(Cfg.AetheryteName, ELPIS_TERRITORY))
             State.teleportSent = true
         end
         return nil
@@ -658,7 +697,7 @@ function Handlers.TRAVEL()
     if not Api.NavReady() then return nil end
     if not Api.NavRunning() then
         Mount()
-        if Cfg.UseSprint and not Api.Condition(Cond.mounted) then yield('/gaction "Sprint"') end
+        if Cfg.UseSprint and not Api.Condition(Cond.mounted) then Api.GeneralAction(GA.sprint) end
         FlyToFlag()
         return nil
     end
@@ -675,7 +714,7 @@ function Handlers.DIG()
 
     if not State.digSent then
         Dismount()
-        yield(Cfg.DigCommand)
+        Api.GeneralAction(GA.dig)
         State.digSent = true
         return nil
     end
@@ -779,17 +818,34 @@ end
 ---------------------------------------------------------------- 買圖子流程（市場板）
 -- 目標庫存：1 張已解讀 + SpareMaps 張未解讀。流程：買圖 → 解讀 → 買圖 → 出發挖寶
 
+-- 到市場板：傳送到城市 → Lifestream 城內以太網（市場）→ 關掉 TeleportTown 視窗 → vnavmesh 走過去
 function Handlers.MB_TRAVEL()
     if Busy() then return nil end
+    if Api.AddonReady("TeleportTown") then
+        yield("/callback TeleportTown false -1")
+        return nil
+    end
+
     if Api.GetEntity(Cfg.MarketBoardName) == nil then
-        if not State.sent then
-            Api.NavStop()
-            Api.Teleport(Cfg.MarketAetheryte)
-            State.sent = true
+        if Api.Territory() ~= Cfg.MarketTerritoryId then
+            if not State.sent then
+                local dest = Api.ResolveAetheryte(Cfg.MarketAetheryte, Cfg.MarketTerritoryId)
+                if dest == nil then
+                    LogError("查不到地區 " .. Cfg.MarketTerritoryId .. " 的以太之光，請填 MarketAetheryte")
+                    return "ERROR"
+                end
+                Api.NavStop()
+                Api.Teleport(dest)
+                State.sent = true
+            end
+        elseif Cfg.MarketAethernet ~= "" and not State.aethernetSent then
+            Api.Teleport(Cfg.MarketAethernet)
+            State.aethernetSent = true
         end
         if TimedOut("MB_TRAVEL") then return "ERROR" end
         return nil
     end
+
     Api.Target(Cfg.MarketBoardName)
     local t = Entity.Target
     if t ~= nil and t.DistanceTo ~= nil and t.DistanceTo <= 3 then
@@ -986,7 +1042,7 @@ local function Transition(next)
     State.current = next
     State.enteredAt = os.clock()
     State.lastPos, State.rePathed = nil, false
-    State.sent, State.lastClick = false, nil
+    State.sent, State.lastClick, State.aethernetSent = false, nil, false
 end
 
 while true do

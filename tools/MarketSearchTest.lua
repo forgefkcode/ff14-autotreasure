@@ -1,7 +1,7 @@
 --[=====[
 [[SND Metadata]]
 author: forgefk
-version: 0.5.0
+version: 0.6.0
 description: 找出切到市場板「我的最愛」分頁的 callback 參數。先把地圖加入我的最愛、打開市場板（停在搜尋視窗），再執行，把聊天框的 [MBTest] 訊息貼回來。不會購買。
 configs:
   ItemId:
@@ -73,30 +73,19 @@ if idx ~= nil then
     CloseResult()
 end
 
--- 2. 試切到我的最愛（SearchMode.Favorites = 6）的候選 callback
-local candidates = { "1 6", "2 6", "3 6", "4 6", "6 6", "8 6", "10 6", "11 6", "12 6", "13 6", "14 6", "15 6", "16 6" }
-Echo("2. 試候選參數（每組 1.5 秒）")
-local found = nil
+-- 2. 事件 12 是切換分頁（「12 6」切到期望清單）。逐一試 12 + 不同數字，每組停 3 秒，
+--    請看畫面上目前是哪個分頁，記下哪一組是「我的最愛」
+local candidates = { "12 7", "12 5", "12 8", "12 4", "12 3", "12 6" }
+Echo("2. 逐一切換分頁，每組停 3 秒，請看畫面是哪個分頁")
 for _, c in ipairs(candidates) do
-    local before = ListSummary()
     yield("/callback ItemSearch true " .. c)
-    yield("/wait 1.5")
+    yield("/wait 0.5")
     if Ready("ItemSearchResult") then CloseResult() end
     if not Ready("ItemSearch") then
         Echo("   「" .. c .. "」把搜尋視窗關掉了，停止測試")
         break
     end
-    local after = ListSummary()
-    if after ~= before then Echo("   「" .. c .. "」清單變成：" .. after) end
-    if FindIndex(name) ~= nil then
-        found = c
-        break
-    end
+    Echo("   現在是「" .. c .. "」，清單：" .. ListSummary() .. (FindIndex(name) and "（有地圖）" or ""))
+    yield("/wait 2.5")
 end
-
-if found then
-    Echo("找到了：切到我的最愛的參數是「" .. found .. "」")
-else
-    Echo("候選參數都沒有讓清單出現地圖")
-end
-Echo("測試結束（沒有購買）")
+Echo("測試結束（沒有購買）。請告訴我哪一組畫面是「我的最愛」")

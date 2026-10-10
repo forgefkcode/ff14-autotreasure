@@ -254,6 +254,7 @@ local Timeout = {
     DIG             = 8,
     OPEN_COFFER     = 15,
     FIELD_COMBAT    = 600,
+    FIELD_FIGHT      = 600,
     LOOT            = 10,
     PORTAL_CHECK    = Cfg.PortalWait,
     ENTER_DUNGEON   = 60,
@@ -1416,6 +1417,32 @@ function Handlers.DEAD()
     if TimedOut("DEAD") then return "ERROR" end
 end
 
+---------------------------------------------------------------- 野外被怪物纏上時
+
+-- 這些步驟本來不該有戰鬥；野外被攻擊（陷阱打完後引到旁邊的怪、挖寶途中被攻擊）時先切到 FIELD_FIGHT 打完再回來
+local INTERRUPTIBLE = {
+    CHECK_MAP = true, DECIPHER = true, LOCATE = true, TRAVEL = true, DIG = true,
+    LOOT = true, PORTAL_CHECK = true, ENTER_DUNGEON = true,
+}
+
+-- 先打完周圍的怪：下坐騎、選最近的敵人並按 1、開 Wrath；脫離戰鬥滿 3 秒就回到被打斷的步驟
+function Handlers.FIELD_FIGHT()
+    if Api.Condition(Cond.dead) then LeaveCombat(); return "DEAD" end
+    if Api.Condition(Cond.inCombat) then
+        State.lastInCombat = Elapsed()
+        if Api.Condition(Cond.mounted) then Dismount() end
+        CombatTick()
+        return nil
+    end
+    if Elapsed() - (State.lastInCombat or 0) < 3 then return nil end
+    LeaveCombat()
+    Api.ClearTarget()
+    local resume = State.resumeState or "CHECK_MAP"
+    State.resumeState = nil
+    Log("周圍的怪物打完了，回到 " .. resume)
+    return resume
+end
+
 ---------------------------------------------------------------- 跨伺服器（每輪開始時）
 
 -- 查 Universalis 選最便宜的伺服器；已經在那裡就直接買，查不到就留在目前伺服器
@@ -1879,6 +1906,13 @@ while true do
     if Api.Condition(Cond.betweenAreas) and not waitsOnLoading then
         yield("/wait 0.5")
     else
+        -- 野外被怪物纏上：騎著坐騎時直接飛走，不然先切到 FIELD_FIGHT 打完再回來
+        if INTERRUPTIBLE[State.current] and Api.Condition(Cond.inCombat) and not Api.Condition(Cond.dead)
+            and not Api.Condition(Cond.mounted) and not InDuty() then
+            State.resumeState = State.current
+            Log("被怪物攻擊，先打完再繼續")
+            Transition("FIELD_FIGHT")
+        end
         local handler = Handlers[State.current]
         local ok, result = pcall(handler)
         if not ok then

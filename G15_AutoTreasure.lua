@@ -9,8 +9,8 @@ plugin_dependencies:
 - BossModReborn
 configs:
   MapItemId:
-    default: 0
-    description: 未解讀 G15 地圖的物品 ID（待填，0 = 未設定，INIT 會停止）
+    default: 39591
+    description: 未解讀 G15 地圖的物品 ID（已查好，取自 XIVAPI；0 = 未設定，INIT 會停止）
   MapItemName:
     default: "古舊的蛇牛革地圖"
     description: 未解讀 G15 地圖的物品名稱（解讀視窗比對用）

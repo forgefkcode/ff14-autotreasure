@@ -9,8 +9,8 @@ plugin_dependencies:
 - BossModReborn
 configs:
   MapItemId:
-    default: 0
-    description: 未解讀 G17 地圖的物品 ID（待填，0 = 未設定，INIT 會停止）
+    default: 43557
+    description: 未解讀 G17 地圖的物品 ID（已查好，取自 XIVAPI；0 = 未設定，INIT 會停止）
   MapItemName:
     default: "Timeworn Br'aaxskin Map"
     description: 未解讀 G17 地圖的物品名稱（依客戶端語系）

@@ -26,8 +26,8 @@ SND（Something Need Doing）Lua 腳本，戰士單人循環挖寶與寶物庫�
 
 - 共通：`MaxMapPrice`（每張圖最多付多少 gil）；`MarketBoardName` 依客戶端語系填
 
-- G17：`MapItemId`、`ChestName`、`PortalName`、`DoorName`；各地區傳送目的地依客戶端語系調整
-- G15：`MapItemId`、`ChestName`、`PortalName`、`SphereName`
+- G17：`ChestName`、`PortalName`、`DoorName`；各地區傳送目的地依客戶端語系調整
+- G15：`ChestName`、`PortalName`、`SphereName`
 
 ## 狀態
 

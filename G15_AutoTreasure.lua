@@ -117,6 +117,9 @@ configs:
   PortalName:
     default: "傳送魔紋"
     description: 傳送門物件名稱（繁中客戶端）
+  ExitPortalName:
+    default: "傳送魔紋"
+    description: 寶物庫第 5 關後離開用的傳送門物件名稱
   AetheryteName:
     default: ""
     description: 厄爾庇斯的以太之光名稱（留空 = 自動從遊戲資料取）
@@ -202,6 +205,7 @@ local Cfg = {
     ChestName        = Config.Get("ChestName"),
     DungeonChestName = Config.Get("DungeonChestName"),
     PortalName       = Config.Get("PortalName"),
+    ExitPortalName   = Config.Get("ExitPortalName"),
     AetheryteName    = Config.Get("AetheryteName"),
     EchoLogs         = Config.Get("EchoLogs"),
 }
@@ -233,8 +237,8 @@ local Timeout = {
     DUNGEON_SPHERE   = 15,
     DUNGEON_ROULETTE = 90,   -- 輪盤動畫 30 秒以上
     DUNGEON_COMBAT   = 3600,  -- 副本限時 60 分鐘
-    DUNGEON_CHEST    = 15,
-    DUNGEON_EXIT     = 60,
+    DUNGEON_CHEST    = 120,
+    DUNGEON_EXIT     = 180,
 }
 
 local DECIPHER_RETRIES = 2
@@ -1678,29 +1682,45 @@ function Handlers.DUNGEON_COMBAT()
     return "DUNGEON_CHEST"
 end
 
+-- 開寶箱：可能有多個，一個一個開；最後一次互動（或一開始就沒寶箱）後等 10 秒，
+-- 確定沒有新的寶箱才進下一關（點召喚魔法陣），最多 5 關，第 5 關後去找離開用的傳送魔紋
 function Handlers.DUNGEON_CHEST()
     if not InDuty() then return "DUNGEON_EXIT" end
     if Api.DeclineGamble() then return nil end
+    if State.lastChestAt == nil then State.lastChestAt = Elapsed() end
 
-    if Api.GetEntity(Cfg.DungeonChestName) == nil and State.chestOpened then
-        State.chestOpened = false
-        Log("第 " .. State.stage .. " 關完成")
-        State.stage = State.stage + 1
-        if State.stage <= MAX_STAGES then return "DUNGEON_SPHERE" end
-        return "DUNGEON_EXIT"
+    if Api.GetEntity(Cfg.DungeonChestName) ~= nil then
+        if not Api.Condition(Cond.occupiedInEvent) and ApproachAndInteract(Cfg.DungeonChestName) then
+            State.lastChestAt = Elapsed()
+        end
+        if TimedOut("DUNGEON_CHEST") then return "ERROR" end
+        return nil
     end
-    if not Api.Condition(Cond.occupiedInEvent) then
-        if ApproachAndInteract(Cfg.DungeonChestName) then State.chestOpened = true end
-    end
-    if TimedOut("DUNGEON_CHEST") then return "ERROR" end
+    if Api.Condition(Cond.occupiedInEvent) or Elapsed() - State.lastChestAt < 10 then return nil end
+
+    Log("第 " .. State.stage .. " 關完成")
+    State.stage = State.stage + 1
+    if State.stage <= MAX_STAGES then return "DUNGEON_SPHERE" end
+    return "DUNGEON_EXIT"
 end
 
+-- 離開寶物庫：還在寶物庫內就找離開用的傳送魔紋（ExitPortalName）互動並確認；
+-- 被移出或陣亡結束時直接等回到野外
 function Handlers.DUNGEON_EXIT()
     if not InDuty() and not Busy() then
         local reached = math.min(State.stage, MAX_STAGES)
         table.insert(State.stageLog, reached)
         Log("寶物庫結束，到達第 " .. reached .. " 關")
         return "CHECK_MAP"
+    end
+    if InDuty() and not Busy() and not Api.Condition(Cond.dead) then
+        if Api.ConfirmYes() then return nil end
+        if Api.GetEntity(Cfg.ExitPortalName) ~= nil then
+            if not Api.Condition(Cond.occupiedInEvent) then ApproachAndInteract(Cfg.ExitPortalName) end
+        elseif not State.manualPrompted and Elapsed() > 20 then
+            Log("找不到離開用的「" .. Cfg.ExitPortalName .. "」，請確認 ExitPortalName 或手動離開")
+            State.manualPrompted = true
+        end
     end
     if TimedOut("DUNGEON_EXIT") then return "ERROR" end
 end
@@ -1746,6 +1766,7 @@ local function Transition(next)
     State.cityTeleportSent, State.walkStarted, State.walkedToCrystal = false, false, false
     State.combatTargeted, State.lastEnemyScan, State.lastInCombat, State.enemySeen = false, nil, nil, false
     State.favoritesTried = false
+    State.lastChestAt = nil
     State.searchTries, State.lastSearch, State.manualPrompted = 0, nil, false
 end
 

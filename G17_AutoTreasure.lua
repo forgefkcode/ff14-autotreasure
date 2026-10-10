@@ -85,7 +85,7 @@ configs:
     default: 3
     description: 距離旗標多近開始挖寶
   PortalWait:
-    default: 5
+    default: 10
     description: 開箱後等待傳送門出現的秒數
   PotionHpPercent:
     default: 40
@@ -502,6 +502,24 @@ function Api.ClearTarget()
     if not ok then yield("/send ESCAPE") end
 end
 
+-- 選取最近的敵人（SND 內建 /targetenemy：最近、可選取、還活著的敵對目標），只選一次不鎖定
+function Api.TargetNearestEnemy()
+    yield("/targetenemy")
+    yield("/wait 0.1")
+    return Entity.Target ~= nil
+end
+
+-- maxDistance 內還有沒有敵人：先解除選取再 /targetenemy，選到且夠近才算（太遠的野外怪不算，並取消選取）
+function Api.AnyEnemyLeft(maxDistance)
+    Api.ClearTarget()
+    yield("/wait 0.1")
+    if not Api.TargetNearestEnemy() then return false end
+    local t = Entity.Target
+    if t ~= nil and t.DistanceTo ~= nil and t.DistanceTo <= maxDistance then return true end
+    Api.ClearTarget()
+    return false
+end
+
 function Api.GeneralAction(id)
     Actions.ExecuteGeneralAction(id)
 end
@@ -821,10 +839,14 @@ local function CombatTick()
     if t ~= nil and (t.Name == Cfg.ChestName or t.Name == Cfg.DungeonChestName) then
         Api.ClearTarget()
     end
+    -- 戰鬥開始時選一次最近的敵人，之後交給 Wrath，不保持鎖定
+    if not State.combatTargeted then
+        Api.TargetNearestEnemy()
+        State.combatTargeted = true
+    end
     if not State.wrathOn then
         Api.NavStop()
         Api.WrathOn()
-        State.wrathOn = true
     end
     MaybeDrinkPotion()
 end
@@ -1144,17 +1166,26 @@ function Handlers.FIELD_COMBAT()
         CombatTick()
         return nil
     end
-    if Api.HasHostileNearby(30) then return nil end
+    -- 脫離戰鬥後確認怪物都打完了（還選得到敵人就繼續打），再等 3 秒才互動
+    if Api.AnyEnemyLeft(30) then
+        CombatTick()
+        return nil
+    end
     LeaveCombat()
-    if Api.GetEntity(Cfg.ChestName) == nil then
+    Api.ClearTarget()
+    yield("/wait 3")
+    if Api.GetEntity(Cfg.ChestName) == nil and Api.GetEntity(Cfg.PortalName) == nil then
         Log("寶箱已消失（可能超過戰鬥時限）")
         return "CHECK_MAP"
     end
     return "LOOT"
 end
 
+-- 領獎：寶箱還在就互動領獎；寶箱消失（或一直不消失但傳送魔紋已出現）就看有沒有傳送魔紋
 function Handlers.LOOT()
-    if Api.GetEntity(Cfg.ChestName) == nil then
+    local chest = Api.GetEntity(Cfg.ChestName)
+    local portal = Api.GetEntity(Cfg.PortalName)
+    if chest == nil or (portal ~= nil and Elapsed() > 5) then
         State.mapsDone = State.mapsDone + 1
         State.errors = 0
         Log("完成第 " .. State.mapsDone .. " 張")
@@ -1162,12 +1193,18 @@ function Handlers.LOOT()
     end
     if Api.Condition(Cond.occupiedInEvent) then return nil end
     ApproachAndInteract(Cfg.ChestName)
-    if TimedOut("LOOT") then return "ERROR" end
+    if TimedOut("LOOT") then
+        if portal ~= nil then return "PORTAL_CHECK" end
+        return "ERROR"
+    end
 end
 
 function Handlers.PORTAL_CHECK()
     if Api.GetEntity(Cfg.PortalName) ~= nil then
-        if Cfg.EnterDungeon then return "ENTER_DUNGEON" end
+        if Cfg.EnterDungeon then
+            Log("出現傳送魔紋，前往互動")
+            return "ENTER_DUNGEON"
+        end
         Log("出現傳送門，但 EnterDungeon = false")
         return "CHECK_MAP"
     end
@@ -1470,8 +1507,13 @@ function Handlers.DUNGEON_COMBAT()
         CombatTick()
         return nil
     end
-    if Api.HasHostileNearby(40) then return nil end
+    if Api.AnyEnemyLeft(50) then
+        CombatTick()
+        return nil
+    end
     LeaveCombat()
+    Api.ClearTarget()
+    yield("/wait 3")
     return "DUNGEON_LOOT"
 end
 
@@ -1596,6 +1638,7 @@ local function Transition(next)
     State.lastPos, State.rePathed = nil, false
     State.sent, State.lastClick, State.travelPhase, State.decipherAt = false, nil, nil, nil
     State.cityTeleportSent = false
+    State.combatTargeted, State.lastEnemyScan = false, nil
     State.searchTries, State.lastSearch, State.manualPrompted = 0, nil, false
 end
 

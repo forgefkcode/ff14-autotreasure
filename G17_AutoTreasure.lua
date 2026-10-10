@@ -90,6 +90,9 @@ configs:
   PortalWait:
     default: 10
     description: 開箱後等待傳送門出現的秒數
+  RouletteWait:
+    default: 45
+    description: 寶物庫戰鬥開始後最多等幾秒找敵人（G15 會先播 30 秒以上的輪盤動畫，怪物之後才出現）
   EnemySearchRange:
     default: 100
     description: 寶物庫內找敵人的範圍（選最近的敵人、確認是否打完都用這個）
@@ -196,7 +199,7 @@ for _, k in ipairs({
     "MapItemId", "MaxMaps", "EnterDungeon", "DecipheredItemId", "FlagWait", "AutoBuy",
     "BmrPreset", "CrossWorld", "DataCenter", "MaxMapPrice", "GilFloor", "MarketTerritoryId", "MarketAetheryte", "AetheryteX", "AetheryteY", "AetheryteZ", "AetheryteRange", "MarketX", "MarketY", "MarketZ",
     "FavoritesCallback", "MarketBoardName", "DoorChoice", "AscendHeight", "WalkRadius", "DigRadius", "PortalWait",
-    "EnemySearchRange", "PotionHpPercent", "PotionItemName", "UseSprint", "MaxErrors", "ChestName", "DungeonChestName",
+    "RouletteWait", "EnemySearchRange", "PotionHpPercent", "PotionItemName", "UseSprint", "MaxErrors", "ChestName", "DungeonChestName",
     "DoorName", "PortalName", "AetheryteUrqopacha", "AetheryteKozamauka", "AetheryteYakTel",
     "AetheryteShaaloani", "AetheryteHeritageFound", "EchoLogs",
 }) do
@@ -1640,11 +1643,17 @@ function Handlers.DUNGEON_COMBAT()
         return "DUNGEON_EXIT"
     end
     if not InDuty() then LeaveCombat(); return "DUNGEON_EXIT" end
-    -- 一進入就選最近的敵人：怪物剛出現時可能還不能選，每秒重試、最多 15 秒；選到後交給 Wrath，不保持鎖定
+    -- 一進入就選最近的敵人。G15 進入時會先播輪盤動畫（30 秒以上），怪物動畫結束才出現：
+    -- 每秒重試，最多等 RouletteWait 秒；選到後交給 Wrath，不保持鎖定
     if not State.combatTargeted then
         if Elapsed() - (State.lastEnemyScan or -10) >= 1 then
             State.lastEnemyScan = Elapsed()
-            if Api.TargetNearestEnemy(Cfg.EnemySearchRange) or Elapsed() > 15 then State.combatTargeted = true end
+            if Api.TargetNearestEnemy(Cfg.EnemySearchRange) then
+                State.combatTargeted, State.enemySeen = true, true
+                Log("選取最近的敵人")
+            elseif Elapsed() > Cfg.RouletteWait then
+                State.combatTargeted = true
+            end
         end
         if not State.wrathOn then Api.WrathOn() end
         return nil
@@ -1657,10 +1666,13 @@ function Handlers.DUNGEON_COMBAT()
     -- 脫離戰鬥滿 3 秒才確認還有沒有敵人（戰鬥中不解除、不重選）
     if Elapsed() - (State.lastInCombat or 0) < 3 then return nil end
     if Api.AnyEnemyLeft(Cfg.EnemySearchRange) then
+        State.enemySeen = true
         State.lastInCombat = Elapsed()
         if not State.wrathOn then Api.WrathOn() end
         return nil
     end
+    -- 一次都沒看過敵人：可能還在播動畫，等到 RouletteWait + 15 秒才放棄
+    if not State.enemySeen and Elapsed() < Cfg.RouletteWait + 15 then return nil end
     LeaveCombat()
     Api.ClearTarget()
     return "DUNGEON_LOOT"
@@ -1787,7 +1799,7 @@ local function Transition(next)
     State.lastPos, State.rePathed = nil, false
     State.sent, State.lastClick, State.travelPhase, State.decipherAt = false, nil, nil, nil
     State.cityTeleportSent, State.walkStarted, State.walkedToCrystal = false, false, false
-    State.combatTargeted, State.lastEnemyScan, State.lastInCombat = false, nil, nil
+    State.combatTargeted, State.lastEnemyScan, State.lastInCombat, State.enemySeen = false, nil, nil, false
     State.favoritesTried = false
     State.searchTries, State.lastSearch, State.manualPrompted = 0, nil, false
 end

@@ -41,7 +41,7 @@ configs:
     description: 買圖城市的以太之光名稱（留空 = 依 MarketTerritoryId 自動從遊戲資料取）
   AetheryteX:
     default: -84
-    description: 買圖城市大水晶的位置 X（換伺服器前要走到這附近；預設是利姆薩·羅敏薩下層甲板）
+    description: 大水晶位置 X（備用：腳本會先從遊戲取座標，取不到才用這組；預設是利姆薩·羅敏薩下層甲板）
   AetheryteY:
     default: 20.8
     description: 大水晶位置 Y（高度）
@@ -383,6 +383,26 @@ end
 
 function Api.NavStop()
     if Api.NavRunning() then IPC.vnavmesh.Stop() end
+end
+
+-- 地區主要大水晶的 ID（TerritoryType.Aetheryte）
+function Api.TerritoryAetheryteId(territoryId)
+    local ok, id = pcall(function() return Excel.GetRow("TerritoryType", territoryId).Aetheryte.RowId end)
+    if ok and id ~= nil and tonumber(id) ~= nil and tonumber(id) > 0 then return tonumber(id) end
+    return nil
+end
+
+-- 大水晶的實際座標（SND Instances.Telepo），取不到回 nil
+function Api.AetherytePosition(aetheryteId)
+    local ok, pos = pcall(function() return Instances.Telepo:GetAetherytePosition(aetheryteId) end)
+    if ok and pos ~= nil and (pos.X ~= 0 or pos.Z ~= 0) then return pos end
+    return nil
+end
+
+-- 直接傳送到指定大水晶（遊戲原生傳送，同地區也能傳）
+function Api.TeleportToAetheryte(aetheryteId)
+    local ok = pcall(function() Actions.Teleport(aetheryteId) end)
+    return ok
 end
 
 -- 從遊戲資料取得地區主要以太之光的名稱（自動是客戶端語系），寫法取自 pot0to 的 SND 腳本
@@ -1269,30 +1289,47 @@ function Handlers.WORLD_TRAVEL()
     if Busy() then return nil end
 
     if not State.sent then
-        if Api.Territory() ~= Cfg.MarketTerritoryId then
-            if not State.cityTeleportSent then
+        -- 買圖城市的大水晶：ID 與座標從遊戲取，取不到才用設定 AetheryteX/Y/Z
+        local aetheryteId = Api.TerritoryAetheryteId(Cfg.MarketTerritoryId)
+        local crystal = (aetheryteId and Api.AetherytePosition(aetheryteId))
+            or Vector3(Cfg.AetheryteX, Cfg.AetheryteY, Cfg.AetheryteZ)
+        local inCity = Api.Territory() == Cfg.MarketTerritoryId
+        local dist = inCity and Distance2D(Api.PlayerPos(), crystal) or math.huge
+
+        -- 離大水晶太遠（或不在城裡）：直接傳送到那座大水晶，落地就在旁邊。只傳一次
+        if dist > Cfg.AetheryteRange and not State.cityTeleportSent then
+            if not Api.PlayerReady() then return nil end
+            Api.NavStop()
+            Dismount()
+            local ok = aetheryteId ~= nil and Api.TeleportToAetheryte(aetheryteId)
+            if not ok then
                 local dest = Api.ResolveAetheryte(Cfg.MarketAetheryte, Cfg.MarketTerritoryId)
                 if dest == nil then return "ERROR" end
-                Api.NavStop()
                 Api.Teleport(dest)
-                State.cityTeleportSent = true
             end
+            Log("傳送到買圖城市的大水晶")
+            State.cityTeleportSent = true
+            yield("/wait 3")
+            return nil
+        end
+        if not inCity then
             if TimedOut("WORLD_TRAVEL") then return "ERROR" end
             return nil
         end
 
-        -- 大水晶底座有實體擋著，走不到中心：目標設在中心往自己方向退 7 的外圍點，
-        -- 距離中心 AetheryteRange 以內就算到（移動中一進範圍就停）
-        local crystal = Vector3(Cfg.AetheryteX, Cfg.AetheryteY, Cfg.AetheryteZ)
-        local pos = Api.PlayerPos()
-        local dist = Distance2D(pos, crystal)
-        if dist > Cfg.AetheryteRange then
+        -- 傳送後還不夠近：走一次到大水晶外圍（底座有實體，不往中心走）；走完不管多近都直接試換伺服器
+        if dist > Cfg.AetheryteRange and not State.walkedToCrystal then
             if not Api.NavRunning() then
-                Dismount()
-                local dx, dz = pos.X - crystal.X, pos.Z - crystal.Z
-                local len = math.max(dist, 0.01)
-                local x, z = crystal.X + dx / len * 7, crystal.Z + dz / len * 7
-                Api.NavMoveTo(Api.PointOnFloor(x, z) or Vector3(x, crystal.Y, z), false)
+                if State.walkStarted then
+                    State.walkedToCrystal = true
+                else
+                    local pos = Api.PlayerPos()
+                    local len = math.max(dist, 0.01)
+                    local x = crystal.X + (pos.X - crystal.X) / len * 7
+                    local z = crystal.Z + (pos.Z - crystal.Z) / len * 7
+                    Api.NavMoveTo(Api.PointOnFloor(x, z) or Vector3(x, crystal.Y, z), false)
+                    State.walkStarted = true
+                end
             end
             if TimedOut("WORLD_TRAVEL") then return "ERROR" end
             return nil
@@ -1611,7 +1648,7 @@ local function Transition(next)
     State.enteredAt = os.clock()
     State.lastPos, State.rePathed = nil, false
     State.sent, State.lastClick, State.travelPhase, State.decipherAt = false, nil, nil, nil
-    State.cityTeleportSent = false
+    State.cityTeleportSent, State.walkStarted, State.walkedToCrystal = false, false, false
     State.combatTargeted, State.lastEnemyScan = false, nil
     State.searchTries, State.lastSearch, State.manualPrompted = 0, nil, false
 end

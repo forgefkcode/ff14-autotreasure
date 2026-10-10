@@ -17,7 +17,7 @@ configs:
     description: 本次最多跑幾張，0 = 跑到沒圖
   AutoBuy:
     default: true
-    description: 圖不夠時自動到市場板買圖（維持身上 1 張已解讀 + SpareMaps 張未解讀）
+    description: 圖不夠時自動到市場板買圖（維持身上 1 張已解讀 + SpareMaps 張未解讀）。事前須在市場板把地圖加入「我的最愛」和「期望清單」
   SpareMaps:
     default: 1
     description: 身上要保留幾張未解讀的備用圖
@@ -709,6 +709,9 @@ function Handlers.INIT()
         return "END"
     end
     Log("要買的地圖：" .. Cfg.MapItemName .. "（" .. Cfg.MapItemId .. "）")
+    if Cfg.AutoBuy then
+        Log("提醒：自動買圖前，請確認已在市場板把「" .. Cfg.MapItemName .. "」加入我的最愛和期望清單")
+    end
     if Cfg.MarketBoardName == "" then
         Cfg.MarketBoardName = Api.MarketBoardObjectName() or "Market Board"
     end
@@ -921,6 +924,8 @@ function Handlers.DEAD()
 end
 
 ---------------------------------------------------------------- 買圖子流程（市場板）
+-- 【事前準備，必做】要買的地圖必須先在市場板手動加入「我的最愛」和「期望清單」，
+-- 否則搜尋後點不開上架清單（ItemSearchResult），買圖會卡在 MB_SEARCH。
 -- 目標庫存：1 張已解讀 + SpareMaps 張未解讀。流程：買圖 → 解讀 → 買圖 → 出發挖寶
 
 -- 到市場板：傳送到城市大水晶 → vnavmesh 走到 MarketX/Y/Z → 開市場板
@@ -991,7 +996,7 @@ function Handlers.MB_SEARCH()
         end
     else
         if not State.manualPrompted then
-            Log("自動搜尋沒有結果，請手動在市場板輸入「" .. Cfg.MapItemName .. "」並搜尋，腳本會接著自動購買")
+            Log("自動搜尋沒有結果，請確認「" .. Cfg.MapItemName .. "」已加入市場板的我的最愛和期望清單，或手動搜尋，腳本會接著自動購買")
             State.manualPrompted = true
         end
         if Elapsed() - (State.lastClick or -10) > 3 then

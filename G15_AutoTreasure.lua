@@ -336,6 +336,18 @@ function Api.ItemName(itemId)
     return nil
 end
 
+-- 角色可操作（傳送、讀取、詠唱、過場都不算），寫法同 pot0to 腳本
+function Api.PlayerReady()
+    local ok, ready = pcall(function() return Player.Available and not Player.IsBusy end)
+    return ok and ready == true
+end
+
+-- 解除目前的選取，讓 Wrath 自動選怪
+function Api.ClearTarget()
+    local ok = pcall(function() Svc.Targets.Target = nil end)
+    if not ok then yield("/send ESCAPE") end
+end
+
 function Api.GeneralAction(id)
     Actions.ExecuteGeneralAction(id)
 end
@@ -547,20 +559,24 @@ local function CheckStuck(repath)
     return "ok"
 end
 
+-- 上坐騎：重複執行直到真的騎上（剛傳送完、詠唱中送出會被吃掉）。回傳是否已在坐騎上
 local function Mount()
-    if Api.Condition(Cond.mounted) then return end
-    Api.GeneralAction(GA.mountRoulette)
-    yield("/wait 3")
-end
-
-local function Dismount()
-    if not Api.Condition(Cond.mounted) then return end
-    Api.GeneralAction(GA.dismount)
-    yield("/wait 1.5")
-    if Api.Condition(Cond.flying) or Api.Condition(Cond.mounted) then
-        Api.GeneralAction(GA.dismount)   -- 飛行中第一次只會降落
+    for _ = 1, 5 do
+        if Api.Condition(Cond.mounted) then return true end
+        if Api.PlayerReady() then Api.GeneralAction(GA.mountRoulette) end
         yield("/wait 1.5")
     end
+    return Api.Condition(Cond.mounted)
+end
+
+-- 下坐騎：重複執行直到真的下來（飛行中第一次只會降落，要再按一次）。回傳是否已下坐騎
+local function Dismount()
+    for _ = 1, 8 do
+        if not Api.Condition(Cond.mounted) then return true end
+        Api.GeneralAction(GA.dismount)
+        yield("/wait 1")
+    end
+    return not Api.Condition(Cond.mounted)
 end
 
 -- 設定有填就用設定，留空就從遊戲資料取該地區的以太之光名稱
@@ -579,6 +595,7 @@ local function ApproachAndInteract(name)
     end
     Api.NavStop()
     Api.WrathOff()   -- 互動保護
+    if not Dismount() then return false end   -- 騎著坐騎不能互動
     Api.InteractTarget()
     return true
 end
@@ -760,7 +777,9 @@ function Handlers.TRAVEL()
 
     if not Api.NavReady() then return nil end
     if not Api.NavRunning() then
-        Mount()
+        -- 傳送後先確認角色可操作、已上坐騎，才開始飛（沒上坐騎時飛行路線不會動）
+        if not Api.PlayerReady() then return nil end
+        if not Mount() then return nil end
         if Cfg.UseSprint and not Api.Condition(Cond.mounted) then Api.GeneralAction(GA.sprint) end
         FlyToFlag()
         return nil
@@ -806,8 +825,15 @@ function Handlers.OPEN_COFFER()
     if TimedOut("OPEN_COFFER") then return "ERROR" end
 end
 
+-- 戰鬥中：解除對寶箱的選取（選著寶箱 Wrath 不會自動選怪），交給 Wrath 打；
+-- 戰鬥結束後由 LOOT / DUNGEON_LOOT 重新選寶箱互動
 local function CombatTick()
+    local t = Entity.Target
+    if t ~= nil and (t.Name == Cfg.ChestName or t.Name == Cfg.DungeonChestName) then
+        Api.ClearTarget()
+    end
     if not State.wrathOn then
+        Api.NavStop()
         Api.WrathOn()
         State.wrathOn = true
     end

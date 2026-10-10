@@ -75,6 +75,9 @@ configs:
   AscendHeight:
     default: 100
     description: 傳送到藏寶地區上坐騎後，先往上飛多高再開始找路
+  WalkRadius:
+    default: 15
+    description: 飛到離旗標多近就下坐騎改走路（飛行停點不準，近距離走路比較準）
   DigRadius:
     default: 3
     description: 距離旗標多近開始挖寶
@@ -176,6 +179,7 @@ local Cfg = {
     MarketZ          = Config.Get("MarketZ"),
     MarketBoardName  = Config.Get("MarketBoardName"),
     AscendHeight     = Config.Get("AscendHeight"),
+    WalkRadius       = Config.Get("WalkRadius"),
     DigRadius        = Config.Get("DigRadius"),
     PortalWait       = Config.Get("PortalWait"),
     PotionHpPercent  = Config.Get("PotionHpPercent"),
@@ -991,6 +995,30 @@ function Handlers.TRAVEL()
     end
 
     if not Api.NavReady() then return nil end
+
+    -- 接近旗標（WalkRadius 以內）就下坐騎改走路：飛行停點不準，會在旗標附近一直繞。
+    -- 走路最多重試 3 次，還到不了正中心就原地開挖（挖不到時 DIG 會繞旗標換位置）
+    if Distance2D(Api.PlayerPos(), flag) < Cfg.WalkRadius then
+        if State.travelPhase ~= "walk" then
+            Api.NavStop()
+            if not Dismount() then return nil end
+            State.travelPhase, State.walkTries = "walk", 0
+            Log("接近藏寶點，下坐騎走過去")
+        end
+        if not Api.NavRunning() then
+            State.walkTries = State.walkTries + 1
+            if State.walkTries > 3 then
+                Log("走不到旗標正中心，就在這裡挖")
+                State.digOffsetIdx = 0
+                return "DIG"
+            end
+            local f = Api.FlagPos()
+            Api.NavMoveTo(Api.PointOnFloor(f.X, f.Z) or Vector3(f.X, Api.PlayerPos().Y, f.Z), false)
+            yield("/wait 0.5")
+        end
+        if TimedOut("TRAVEL") then return "ERROR" end
+        return nil
+    end
 
     -- 先上升：上坐騎後垂直往上飛 AscendHeight，最多 15 秒，再開始找路
     if State.travelPhase ~= "fly" then

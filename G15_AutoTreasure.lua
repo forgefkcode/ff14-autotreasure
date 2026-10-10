@@ -47,7 +47,7 @@ configs:
     description: 市場板物件名稱（留空 = 自動從遊戲資料取）
   StartWithDeciphered:
     default: false
-    description: 啟動時身上已經有解讀過的圖（偵測不到時用這個強制指定）
+    description: 啟動時身上已經有解讀過的圖就設成 true（遊戲沒辦法自動偵測）
   FlagWait:
     default: 120
     description: 解讀後等藏寶點旗標的秒數（XivTreasureParty 自動打，或你手動插）
@@ -427,11 +427,10 @@ function Api.MarketBuyFirstListing()
     yield("/callback ItemSearchResult true 2 0")
 end
 
--- 開機時判斷身上是否已有解讀過的圖：遊戲沒有原生指令可查。
--- XivTreasureParty 偵測到已解讀的圖會自動打旗標，所以「旗標在藏寶地區」視為有；也可用 StartWithDeciphered 強制
+-- 開機時判斷身上是否已有解讀過的圖：遊戲沒有原生指令可查，只看設定 StartWithDeciphered。
+-- 不用「地圖上有旗標」判斷：之前留下的舊旗標會造成誤判
 function Api.ProbeDecipheredMap()
-    if Cfg.StartWithDeciphered then return true end
-    return Api.IsFlagSet() and Api.FlagTerritory() == ELPIS_TERRITORY
+    return Cfg.StartWithDeciphered == true
 end
 
 -- 使用者手動中止：目前在 SND 介面按停止即可（會直接終止腳本，不跑 END 統計）。

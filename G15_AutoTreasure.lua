@@ -1682,7 +1682,7 @@ function Handlers.DUNGEON_COMBAT()
     return "DUNGEON_CHEST"
 end
 
--- 開寶箱：可能有多個，一個一個開；最後一次互動（或一開始就沒寶箱）後等 10 秒，
+-- 開寶箱：可能有多個（自動開箱插件通常會先開完，這裡只處理殘留的），一個一個開；最後一次互動（或一開始就沒寶箱）後等 10 秒，
 -- 確定沒有新的寶箱才進下一關（點召喚魔法陣），最多 5 關，第 5 關後去找離開用的傳送魔紋
 function Handlers.DUNGEON_CHEST()
     if not InDuty() then return "DUNGEON_EXIT" end
@@ -1690,7 +1690,8 @@ function Handlers.DUNGEON_CHEST()
     if State.lastChestAt == nil then State.lastChestAt = Elapsed() end
 
     if Api.GetEntity(Cfg.DungeonChestName) ~= nil then
-        if not Api.Condition(Cond.occupiedInEvent) and ApproachAndInteract(Cfg.DungeonChestName) then
+        -- 前 3 秒先讓自動開箱插件開，之後還有殘留的寶箱才由腳本接手
+        if Elapsed() > 3 and not Api.Condition(Cond.occupiedInEvent) and ApproachAndInteract(Cfg.DungeonChestName) then
             State.lastChestAt = Elapsed()
         end
         if TimedOut("DUNGEON_CHEST") then return "ERROR" end

@@ -232,7 +232,7 @@ local Timeout = {
     DUNGEON_INIT    = 30,
     DUNGEON_CHEST   = 20,
     DUNGEON_COMBAT  = 3600,  -- 副本限時 60 分鐘
-    DUNGEON_LOOT    = 15,
+    DUNGEON_LOOT    = 120,
     DUNGEON_DOOR    = 30,
     DUNGEON_PASSAGE = 30,
     DUNGEON_EXIT    = 90,
@@ -1678,21 +1678,26 @@ function Handlers.DUNGEON_COMBAT()
     return "DUNGEON_LOOT"
 end
 
+-- 開寶箱：可能有多個（自動開箱插件通常會先開完，這裡只處理殘留的）。前 3 秒先讓插件開，
+-- 之後還有可互動的寶箱就由腳本開；最後一次互動（或一開始就沒寶箱）後等 10 秒沒有新寶箱才進下一步
 function Handlers.DUNGEON_LOOT()
     if not InDuty() then return "DUNGEON_EXIT" end
     if Api.Condition(Cond.inCombat) then return "DUNGEON_COMBAT" end   -- 開箱又觸發額外怪
     if Api.DeclineGamble() then return nil end
+    if State.lastChestAt == nil then State.lastChestAt = Elapsed() end
 
-    if Api.GetEntity(Cfg.DungeonChestName) == nil and State.chestOpened then
-        State.chestOpened = false
-        Log("第 " .. State.stage .. " 關完成")
-        if State.stage >= MAX_STAGES then return "DUNGEON_EXIT" end
-        return "DUNGEON_DOOR"
+    if Api.GetEntity(Cfg.DungeonChestName) ~= nil then
+        if Elapsed() > 3 and not Api.Condition(Cond.occupiedInEvent) and ApproachAndInteract(Cfg.DungeonChestName) then
+            State.lastChestAt = Elapsed()
+        end
+        if TimedOut("DUNGEON_LOOT") then return "ERROR" end
+        return nil
     end
-    if not Api.Condition(Cond.occupiedInEvent) then
-        if ApproachAndInteract(Cfg.DungeonChestName) then State.chestOpened = true end
-    end
-    if TimedOut("DUNGEON_LOOT") then return "ERROR" end
+    if Api.Condition(Cond.occupiedInEvent) or Elapsed() - State.lastChestAt < 10 then return nil end
+
+    Log("第 " .. State.stage .. " 關完成")
+    if State.stage >= MAX_STAGES then return "DUNGEON_EXIT" end
+    return "DUNGEON_DOOR"
 end
 
 -- 選門：兩扇門同名，Random = 隨機挑一扇，First = 永遠挑第一個找到的
@@ -1801,6 +1806,7 @@ local function Transition(next)
     State.cityTeleportSent, State.walkStarted, State.walkedToCrystal = false, false, false
     State.combatTargeted, State.lastEnemyScan, State.lastInCombat, State.enemySeen = false, nil, nil, false
     State.favoritesTried = false
+    State.lastChestAt = nil
     State.searchTries, State.lastSearch, State.manualPrompted = 0, nil, false
 end
 

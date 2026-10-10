@@ -51,9 +51,9 @@ configs:
   MarketBoardName:
     default: ""
     description: 市場板物件名稱（留空 = 自動從遊戲資料取）
-  StartWithDeciphered:
-    default: false
-    description: 啟動時身上已經有解讀過的圖就設成 true（遊戲沒辦法自動偵測）
+  DecipheredItemId:
+    default: 2003457
+    description: 解讀後的地圖（重要物品）ID，用來判斷身上有沒有已解讀的圖（取自 XIVAPI TreasureHuntRank）
   FlagWait:
     default: 120
     description: 解讀後等藏寶點旗標的秒數（XivTreasureParty 自動打，或你手動插）
@@ -145,7 +145,7 @@ local Cfg = {
     MapItemId        = Config.Get("MapItemId"),
     MaxMaps          = Config.Get("MaxMaps"),
     EnterDungeon     = Config.Get("EnterDungeon"),
-    StartWithDeciphered = Config.Get("StartWithDeciphered"),
+    DecipheredItemId = Config.Get("DecipheredItemId"),
     FlagWait   = Config.Get("FlagWait"),
     AutoBuy          = Config.Get("AutoBuy"),
     BmrPreset        = Config.Get("BmrPreset"),
@@ -261,10 +261,11 @@ function Api.ItemCount(itemId)
     return Inventory.GetItemCount(itemId)
 end
 
--- TODO 待確認：已解讀地圖不在一般背包，如何直接查詢未查到。
--- 目前以「腳本自己記錄已解讀」+「旗標已在厄爾庇斯」兩者判斷。
+-- 解讀後的地圖是重要物品（DecipheredItemId），SND 的 Inventory.GetItemCount 支援重要物品
 function Api.HasDecipheredMap()
-    return State.deciphered
+    local ok, count = pcall(function() return Inventory.GetItemCount(Cfg.DecipheredItemId) end)
+    if ok and count ~= nil then return count > 0 end
+    return State.deciphered == true
 end
 
 function Api.IsFlagSet()
@@ -489,13 +490,19 @@ function Api.WrathOff()
     State.wrathOn = false
 end
 
--- TODO 待確認：解讀視窗的 addon 名稱與 callback 參數
-function Api.SelectMapInDecipherWindow()
-    if Api.AddonReady("SelectIconString") then
-        yield("/callback SelectIconString true 0")
-        return true
+-- 解讀視窗是 SelectIconString（標題「解讀」）。依名稱在清單裡找這張地圖的位置，
+-- 節點路徑取自社群腳本 Narrr13/snd OpenMap.lua。讀不到清單文字時退回第 1 項
+function Api.FindDecipherIndex(name)
+    for i = 0, 21 do
+        local nodeId = i == 0 and 5 or (51000 + i)
+        local ok, text = pcall(function() return tostring(Addons.GetAddon("SelectIconString"):GetNode(1, 3, nodeId, 2).Text) end)
+        if not ok or text == nil or text == "" or text == "nil" then
+            if i == 0 then return 0 end
+            break
+        end
+        if text == name or text:find(name, 1, true) then return i end
     end
-    return false
+    return nil
 end
 
 function Api.ConfirmYes()
@@ -593,10 +600,8 @@ function Api.MarketBuyFirstListing()
     yield("/callback ItemSearchResult true 2 0")
 end
 
--- 開機時判斷身上是否已有解讀過的圖：遊戲沒有原生指令可查，只看設定 StartWithDeciphered。
--- 不用「地圖上有旗標」判斷：之前留下的舊旗標會造成誤判
 function Api.ProbeDecipheredMap()
-    return Cfg.StartWithDeciphered == true
+    return Api.HasDecipheredMap()
 end
 
 -- 使用者手動中止：目前在 SND 介面按停止即可（會直接終止腳本，不跑 END 統計）。
@@ -836,7 +841,11 @@ function Handlers.CHECK_MAP()
     local hasDeciphered = Api.HasDecipheredMap()
     local hasUndeciphered = Api.ItemCount(Cfg.MapItemId) > 0
     if Cfg.AutoBuy and not State.buyBlocked then
-        if not hasDeciphered and not hasUndeciphered and not State.roundBuying then
+        -- 新的一輪：身上完全沒圖；或剛啟動、身上還沒湊齊 1 已解讀 + 1 未解讀
+        local firstCheck = State.roundStarted == nil
+        State.roundStarted = true
+        if not State.roundBuying and ((not hasDeciphered and not hasUndeciphered)
+            or (firstCheck and not (hasDeciphered and hasUndeciphered))) then
             State.roundBuying = true
             State.worldChosen = false
             State.badWorlds = {}
@@ -863,21 +872,30 @@ end
 
 function Handlers.DECIPHER()
     EnsureWrathOff()
-    if not State.decipherSent then
-        Api.GeneralAction(GA.decipher)
-        State.decipherSent = true
-        return nil
-    end
-    if Api.SelectMapInDecipherWindow() then return nil end
-    if Api.ConfirmYes() then
-        yield("/wait 2")
+    if Api.HasDecipheredMap() then
+        Api.CloseAddon("SelectIconString")
         State.deciphered = true
-        State.decipherSent = false
         Log("解讀完成")
         return "CHECK_MAP"
     end
+    if Api.ConfirmYes() then return nil end
+    if Api.AddonReady("SelectIconString") then
+        local idx = Api.FindDecipherIndex(Cfg.MapItemName)
+        if idx == nil then
+            LogError("解讀清單裡找不到「" .. Cfg.MapItemName .. "」")
+            Api.CloseAddon("SelectIconString")
+            return "ERROR"
+        end
+        yield("/callback SelectIconString true " .. idx)
+        yield("/wait 0.5")
+        return nil
+    end
+    -- 還沒打開解讀視窗：角色可操作時按「解讀」，3 秒沒反應再按一次
+    if Api.PlayerReady() and Elapsed() - (State.decipherAt or -10) > 3 then
+        Api.GeneralAction(GA.decipher)
+        State.decipherAt = Elapsed()
+    end
     if TimedOut("DECIPHER") then
-        State.decipherSent = false
         if State.retries < DECIPHER_RETRIES then
             State.retries = State.retries + 1
             Log("解讀重試 " .. State.retries)
@@ -1381,7 +1399,7 @@ function Handlers.ERROR()
     State.errorCount = State.errorCount + 1
     LogError("狀態 " .. tostring(State.errorFrom) .. " 失敗（連續 " .. State.errors .. "/" .. Cfg.MaxErrors .. "）")
     -- 清掉各狀態的暫存旗標
-    State.decipherSent, State.tmapSent, State.teleportSent = false, false, false
+    State.tmapSent, State.teleportSent = false, false, false
     State.digSent, State.chestOpened, State.rouletteStarted = false, false, false
     pcall(CloseMarket)
     if State.errors >= Cfg.MaxErrors then return "END" end
@@ -1410,7 +1428,7 @@ local function Transition(next)
     State.current = next
     State.enteredAt = os.clock()
     State.lastPos, State.rePathed = nil, false
-    State.sent, State.lastClick, State.travelPhase = false, nil, nil
+    State.sent, State.lastClick, State.travelPhase, State.decipherAt = false, nil, nil, nil
     State.searchTries, State.lastSearch, State.manualPrompted = 0, nil, false
 end
 

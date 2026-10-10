@@ -17,10 +17,7 @@ configs:
     description: 本次最多跑幾張，0 = 跑到沒圖
   AutoBuy:
     default: true
-    description: 圖不夠時自動到市場板買圖（維持身上 1 張已解讀 + SpareMaps 張未解讀）。事前須在市場板把地圖加入「我的最愛」和「期望清單」
-  SpareMaps:
-    default: 1
-    description: 身上要保留幾張未解讀的備用圖
+    description: 圖不夠時自動到市場板買圖（維持身上 1 張已解讀 + 1 張未解讀）。事前須在市場板把地圖加入「我的最愛」和「期望清單」
   MaxMapPrice:
     default: 0
     description: 每張圖最多付多少 gil（AutoBuy 開啟時必填，0 = 未設定，INIT 會停止）
@@ -139,7 +136,6 @@ local Cfg = {
     StartWithDeciphered = Config.Get("StartWithDeciphered"),
     FlagWait   = Config.Get("FlagWait"),
     AutoBuy          = Config.Get("AutoBuy"),
-    SpareMaps        = Config.Get("SpareMaps"),
     MaxMapPrice      = Config.Get("MaxMapPrice"),
     GilFloor         = Config.Get("GilFloor"),
     MarketTerritoryId = Config.Get("MarketTerritoryId"),
@@ -587,10 +583,10 @@ local function ApproachAndInteract(name)
     return true
 end
 
--- 還要買幾張未解讀圖才達到目標庫存
+-- 地圖是獨特物品：未解讀的最多只能持有 1 張（已解讀的算不同物品，可以另外帶 1 張）。
+-- 所以每次只買 1 張，身上沒有未解讀的圖才需要買
 local function MapsToBuy()
-    local target = Cfg.SpareMaps + (Api.HasDecipheredMap() and 0 or 1)
-    return target - Api.ItemCount(Cfg.MapItemId)
+    return Api.ItemCount(Cfg.MapItemId) == 0 and 1 or 0
 end
 
 local MARKET_ADDONS = { "ItemHistory", "ItemSearchResult", "ItemSearch" }
@@ -678,12 +674,9 @@ function Handlers.CHECK_MAP()
         Log("已達 MaxMaps")
         return "END"
     end
-    -- 補圖：維持 1 張已解讀 + SpareMaps 張未解讀；買不到時本輪不再嘗試，用身上的圖繼續
+    -- 補圖：目標是 1 張已解讀 + 1 張未解讀。順序：買 1 張 → 關市場板 → 解讀 → 再買 1 張 → 關市場板 → 出發
+    -- 買不到時本輪不再嘗試，用身上的圖繼續
     if Cfg.AutoBuy and not State.buyBlocked and MapsToBuy() > 0 then
-        if not Api.HasDecipheredMap() and Api.ItemCount(Cfg.MapItemId) > 0 then
-            State.retries = 0
-            return "DECIPHER"   -- 先解讀手上的圖，再回來補備用圖
-        end
         return "MB_TRAVEL"
     end
     if Api.HasDecipheredMap() then return "LOCATE" end
@@ -889,7 +882,8 @@ end
 ---------------------------------------------------------------- 買圖子流程（市場板）
 -- 【事前準備，必做】要買的地圖必須先在市場板手動加入「我的最愛」和「期望清單」，
 -- 否則搜尋後點不開上架清單（ItemSearchResult），買圖會卡在 MB_SEARCH。
--- 目標庫存：1 張已解讀 + SpareMaps 張未解讀。流程：買圖 → 解讀 → 買圖 → 出發挖寶
+-- 目標庫存：1 張已解讀 + 1 張未解讀（獨特物品，未解讀的不能疊）。
+-- 流程：買 1 張 → 關市場板（MB_CLOSE）→ 解讀 → 再買 1 張 → 關市場板 → 出發挖寶
 
 -- 到市場板：傳送到城市大水晶 → vnavmesh 走到 MarketX/Y/Z → 開市場板
 function Handlers.MB_TRAVEL()
@@ -980,6 +974,10 @@ function Handlers.MB_LIST()
         LogError("市場板上沒有這張地圖")
         return "MB_FAIL"
     end
+    if count > 1 then
+        LogError("最便宜一筆是 " .. count .. " 張一起賣，地圖是獨特物品無法一次買多張")
+        return "MB_FAIL"
+    end
     if price > Cfg.MaxMapPrice then
         LogError(string.format("最便宜一張 %d gil，超過 MaxMapPrice %d", price, Cfg.MaxMapPrice))
         return "MB_FAIL"
@@ -1000,10 +998,7 @@ function Handlers.MB_BUY()
     if Api.ItemCount(Cfg.MapItemId) > State.mapCountBefore then
         State.mapsBought = (State.mapsBought or 0) + Api.ItemCount(Cfg.MapItemId) - State.mapCountBefore
         State.gilSpent = (State.gilSpent or 0) + State.buyPrice
-        if MapsToBuy() > 0 then
-            Api.CloseAddon("ItemSearchResult")   -- 回到搜尋結果，重新打開清單取得最新價格
-            return "MB_SEARCH"
-        end
+        -- 每次只買 1 張：買完一定先關市場板，解讀需要在市場板關閉後才能進行
         return "MB_CLOSE"
     end
     -- 付了錢但這張圖沒增加 = 買到別的東西，立刻停止，避免繼續亂買

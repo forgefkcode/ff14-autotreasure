@@ -39,18 +39,6 @@ configs:
   MarketAetheryte:
     default: ""
     description: 買圖城市的以太之光名稱（留空 = 依 MarketTerritoryId 自動從遊戲資料取）
-  AetheryteX:
-    default: -84
-    description: 大水晶位置 X（備用：腳本會先從遊戲取座標，取不到才用這組；預設是利姆薩·羅敏薩下層甲板）
-  AetheryteY:
-    default: 20.8
-    description: 大水晶位置 Y（高度）
-  AetheryteZ:
-    default: 0
-    description: 大水晶位置 Z
-  AetheryteRange:
-    default: 10
-    description: 離大水晶中心多近就算到（不用站到中心，底座有實體擋著）
   MarketX:
     default: -121
     description: 傳送到大水晶後要走去的市場板位置 X
@@ -197,7 +185,7 @@ local Cond = {
 local Cfg = {}
 for _, k in ipairs({
     "MapItemId", "MaxMaps", "EnterDungeon", "DecipheredItemId", "FlagWait", "AutoBuy",
-    "BmrPreset", "CrossWorld", "DataCenter", "MaxMapPrice", "GilFloor", "MarketTerritoryId", "MarketAetheryte", "AetheryteX", "AetheryteY", "AetheryteZ", "AetheryteRange", "MarketX", "MarketY", "MarketZ",
+    "BmrPreset", "CrossWorld", "DataCenter", "MaxMapPrice", "GilFloor", "MarketTerritoryId", "MarketAetheryte", "MarketX", "MarketY", "MarketZ",
     "FavoritesCallback", "MarketBoardName", "DoorChoice", "AscendHeight", "WalkRadius", "DigRadius", "PortalWait",
     "RouletteWait", "EnemySearchRange", "PotionHpPercent", "PotionItemName", "UseSprint", "MaxErrors", "ChestName", "DungeonChestName",
     "DoorName", "PortalName", "AetheryteUrqopacha", "AetheryteKozamauka", "AetheryteYakTel",
@@ -1363,7 +1351,8 @@ function Handlers.PICK_WORLD()
     return "WORLD_TRAVEL"
 end
 
--- 換伺服器：Lifestream 要在大水晶附近才能換，所以先傳送到買圖城市 → 走到大水晶旁 → 再換伺服器
+-- 換伺服器：Lifestream 要在大水晶旁才能換。一律先傳送到買圖城市的大水晶（落地就在旁邊），
+-- 傳送完成後直接換伺服器，不走路（大水晶底座有實體，往中心走會卡住）
 function Handlers.WORLD_TRAVEL()
     EnsureWrathOff()
     if Api.CurrentWorldId() == State.targetWorld and Api.PlayerReady() and not Api.LifestreamBusy() then
@@ -1374,18 +1363,11 @@ function Handlers.WORLD_TRAVEL()
     if Busy() then return nil end
 
     if not State.sent then
-        -- 買圖城市的大水晶：ID 與座標從遊戲取，取不到才用設定 AetheryteX/Y/Z
-        local aetheryteId = Api.TerritoryAetheryteId(Cfg.MarketTerritoryId)
-        local crystal = (aetheryteId and Api.AetherytePosition(aetheryteId))
-            or Vector3(Cfg.AetheryteX, Cfg.AetheryteY, Cfg.AetheryteZ)
-        local inCity = Api.Territory() == Cfg.MarketTerritoryId
-        local dist = inCity and Distance2D(Api.PlayerPos(), crystal) or math.huge
-
-        -- 離大水晶太遠（或不在城裡）：直接傳送到那座大水晶，落地就在旁邊。只傳一次
-        if dist > Cfg.AetheryteRange and not State.cityTeleportSent then
+        if not State.cityTeleportSent then
             if not Api.PlayerReady() then return nil end
             Api.NavStop()
             Dismount()
+            local aetheryteId = Api.TerritoryAetheryteId(Cfg.MarketTerritoryId)
             local ok = aetheryteId ~= nil and Api.TeleportToAetheryte(aetheryteId)
             if not ok then
                 local dest = Api.ResolveAetheryte(Cfg.MarketAetheryte, Cfg.MarketTerritoryId)
@@ -1397,31 +1379,10 @@ function Handlers.WORLD_TRAVEL()
             yield("/wait 3")
             return nil
         end
-        if not inCity then
+        if Api.Territory() ~= Cfg.MarketTerritoryId or not Api.PlayerReady() or Api.LifestreamBusy() then
             if TimedOut("WORLD_TRAVEL") then return "ERROR" end
             return nil
         end
-
-        -- 傳送後還不夠近：走一次到大水晶外圍（底座有實體，不往中心走）；走完不管多近都直接試換伺服器
-        if dist > Cfg.AetheryteRange and not State.walkedToCrystal then
-            if not Api.NavRunning() then
-                if State.walkStarted then
-                    State.walkedToCrystal = true
-                else
-                    local pos = Api.PlayerPos()
-                    local len = math.max(dist, 0.01)
-                    local x = crystal.X + (pos.X - crystal.X) / len * 7
-                    local z = crystal.Z + (pos.Z - crystal.Z) / len * 7
-                    Api.NavMoveTo(Api.PointOnFloor(x, z) or Vector3(x, crystal.Y, z), false)
-                    State.walkStarted = true
-                end
-            end
-            if TimedOut("WORLD_TRAVEL") then return "ERROR" end
-            return nil
-        end
-
-        if not Api.PlayerReady() or Api.LifestreamBusy() then return nil end
-        Api.NavStop()
         Log("在大水晶旁，換伺服器到 " .. State.targetWorldName)
         Api.Teleport(State.targetWorldName)
         State.sent = true
@@ -1803,7 +1764,7 @@ local function Transition(next)
     State.enteredAt = os.clock()
     State.lastPos, State.rePathed = nil, false
     State.sent, State.lastClick, State.travelPhase, State.decipherAt = false, nil, nil, nil
-    State.cityTeleportSent, State.walkStarted, State.walkedToCrystal = false, false, false
+    State.cityTeleportSent = false
     State.combatTargeted, State.lastEnemyScan, State.lastInCombat, State.enemySeen = false, nil, nil, false
     State.favoritesTried = false
     State.lastChestAt = nil

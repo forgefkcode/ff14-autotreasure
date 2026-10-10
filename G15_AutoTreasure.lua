@@ -7,6 +7,7 @@ plugin_dependencies:
 - vnavmesh
 - WrathCombo
 - BossModReborn
+- Lifestream
 configs:
   MapItemId:
     default: 39591
@@ -31,10 +32,16 @@ configs:
     description: 買完後身上至少保留多少 gil
   MarketAetheryte:
     default: "Tuliyollal"
-    description: 買圖要傳送去的城市（/tp 參數）
+    description: 買圖要傳送去的以太之光（Lifestream，依客戶端語系填）
   MarketBoardName:
     default: "Market Board"
     description: 市場板物件名稱（依客戶端語系）
+  StartWithDeciphered:
+    default: false
+    description: 啟動時身上已經有解讀過的圖（偵測不到時用這個強制指定）
+  FlagWait:
+    default: 120
+    description: 解讀後等藏寶點旗標的秒數（XivTreasureParty 自動打，或你手動插）
   EnterDungeon:
     default: true
     description: 出現傳送門時是否進入寶物庫
@@ -70,7 +77,7 @@ configs:
     description: 傳送門物件名稱（待填）
   AetheryteName:
     default: "Anagnorisis"
-    description: 厄爾庇斯傳送目的地（/tp 參數，依客戶端語系填）
+    description: 厄爾庇斯的以太之光（Lifestream，依客戶端語系填）
   DecipherCommand:
     default: "/ac Decipher"
     description: 解讀指令（中文客戶端可能是 /ac 解讀）
@@ -116,6 +123,8 @@ local Cfg = {
     MapItemName      = Config.Get("MapItemName"),
     MaxMaps          = Config.Get("MaxMaps"),
     EnterDungeon     = Config.Get("EnterDungeon"),
+    StartWithDeciphered = Config.Get("StartWithDeciphered"),
+    FlagWait   = Config.Get("FlagWait"),
     AutoBuy          = Config.Get("AutoBuy"),
     SpareMaps        = Config.Get("SpareMaps"),
     MaxMapPrice      = Config.Get("MaxMapPrice"),
@@ -145,7 +154,7 @@ end
 local Timeout = {
     CHECK_MAP        = 3,
     DECIPHER         = 10,
-    LOCATE           = 10,
+    LOCATE           = Cfg.FlagWait,
     TRAVEL           = 180,
     DIG              = 8,
     OPEN_COFFER      = 15,
@@ -174,7 +183,7 @@ local STUCK_INTERVAL   = 10
 local STUCK_DISTANCE   = 1
 local MAX_STAGES       = 5
 
--- 方案 (a)：內建 G15 八個藏寶點座標（Game8 地圖座標）。待填；空表時改走 Globetrotter / 手動插旗。
+-- 方案 (a)：內建 G15 八個藏寶點座標（Game8 地圖座標）。待填；目前未使用，藏寶點旗標由 XivTreasureParty 自動打或手動插。
 -- 格式：{ x = 11.8, y = 33.1 }
 local TREASURE_SPOTS = {
 }
@@ -293,13 +302,20 @@ function Api.NavStop()
     yield("/vnav stop")
 end
 
+-- 傳送一律交給 Lifestream（/tp 是 Teleporter 插件的指令，沒裝就不存在）
+-- destination = 以太之光名稱，依客戶端語系填
+function Api.Teleport(destination)
+    local ok = pcall(function() IPC.Lifestream.ExecuteCommand(destination) end)
+    if not ok then yield("/li " .. destination) end
+end
+
+function Api.LifestreamBusy()
+    local ok, busy = pcall(function() return IPC.Lifestream.IsBusy() end)
+    return ok and busy == true
+end
+
 function Api.WrathOn()  yield("/wrath auto on")  end
 function Api.WrathOff() yield("/wrath auto off") end
-
-function Api.Teleport()
-    -- TODO 待確認：用原生 /tp 還是 Lifestream（/li <名稱>）
-    yield("/tp " .. Cfg.AetheryteName)
-end
 
 -- TODO 待確認：解讀視窗的 addon 名稱與 callback 參數
 function Api.SelectMapInDecipherWindow()
@@ -369,15 +385,11 @@ function Api.MarketBuyFirstListing()
     yield("/callback ItemSearchResult true 2 0")
 end
 
--- TODO 待確認：開機時偵測身上是否已有解讀過的圖。有的話 /tmap 會打開地圖視窗，沒有則只跳錯誤訊息
+-- 開機時判斷身上是否已有解讀過的圖：遊戲沒有原生指令可查。
+-- XivTreasureParty 偵測到已解讀的圖會自動打旗標，所以「旗標在藏寶地區」視為有；也可用 StartWithDeciphered 強制
 function Api.ProbeDecipheredMap()
-    Api.CloseAddon("AreaMap")
-    yield("/wait 0.5")
-    yield("/tmap")
-    yield("/wait 1.5")
-    local has = Api.AddonReady("AreaMap")
-    Api.CloseAddon("AreaMap")
-    return has
+    if Cfg.StartWithDeciphered then return true end
+    return Api.IsFlagSet() and Api.FlagTerritory() == ELPIS_TERRITORY
 end
 
 -- 使用者手動中止：目前在 SND 介面按停止即可（會直接終止腳本，不跑 END 統計）。
@@ -436,7 +448,7 @@ local function InDuty()
 end
 
 local function Busy()
-    return Api.Condition(Cond.betweenAreas) or Api.Condition(Cond.casting)
+    return Api.Condition(Cond.betweenAreas) or Api.Condition(Cond.casting) or Api.LifestreamBusy()
 end
 
 local function StopAutomation()
@@ -519,7 +531,7 @@ local Handlers = {}
 
 function Handlers.INIT()
     local missing = {}
-    for _, p in ipairs({ "vnavmesh", "WrathCombo", "BossModReborn" }) do
+    for _, p in ipairs({ "vnavmesh", "WrathCombo", "BossModReborn", "Lifestream" }) do
         if not Api.PluginInstalled(p) then table.insert(missing, p) end
     end
     if #missing > 0 then
@@ -543,6 +555,9 @@ function Handlers.INIT()
         .. "，未解讀：" .. Api.ItemCount(Cfg.MapItemId) .. " 張")
     for _, k in ipairs({ "ChestName", "PortalName", "SphereName" }) do
         if Cfg[k] == "" then Log("提醒：" .. k .. " 未填，相關步驟會逾時") end
+    end
+    if not Api.PluginInstalled("XivTreasureParty") then
+        Log("提醒：沒偵測到 XivTreasureParty，解讀後需手動插旗")
     end
     Api.WrathOff()
     return "CHECK_MAP"
@@ -595,20 +610,25 @@ function Handlers.DECIPHER()
     end
 end
 
--- LOCATE 三段策略：(b) Globetrotter 在 /tmap 時自動插精確旗標 → (a) 座標表 → (c) 等使用者手動插旗
+-- LOCATE：解讀後由 XivTreasureParty（設定「解碼後自動開地圖打旗標」）在藏寶點插旗；
+-- 沒裝或沒開該選項時，等使用者手動插旗（FlagWait 秒）。上一張圖用過的旗標不算，避免拿舊旗標重跑
+local function FlagIsFresh()
+    if not Api.IsFlagSet() then return false end
+    local last = State.lastFlag
+    return last == nil or Distance2D(Api.FlagPos(), last) > 1
+end
+
 function Handlers.LOCATE()
-    if Api.IsFlagSet() and Api.FlagTerritory() == ELPIS_TERRITORY then
+    if FlagIsFresh() and Api.FlagTerritory() == ELPIS_TERRITORY then
+        Api.CloseAddon("AreaMap")
         return "TRAVEL"
     end
-    if not State.tmapSent then
-        yield("/tmap")
-        State.tmapSent = true
-        return nil
+    if not State.sent then
+        Log("等待藏寶點旗標（厄爾庇斯）：XivTreasureParty 會自動打，或請手動插旗")
+        State.sent = true
     end
-    -- TODO 方案 (a)：需先辨識已解讀地圖對應哪一點，再 Api.SetFlag(ELPIS_TERRITORY, spot.x, spot.y)
-    if TimedOut("LOCATE") then
-        State.tmapSent = false
-        LogError("無法取得藏寶點：請安裝 Globetrotter 或手動在厄爾庇斯插旗後重新啟動")
+    if Elapsed() > Cfg.FlagWait then
+        LogError("等不到藏寶點旗標")
         return "ERROR"
     end
 end
@@ -622,7 +642,7 @@ function Handlers.TRAVEL()
 
     if Api.Territory() ~= ELPIS_TERRITORY then
         if not State.teleportSent then
-            Api.Teleport()
+            Api.Teleport(Cfg.AetheryteName)
             State.teleportSent = true
         end
         return nil
@@ -674,6 +694,7 @@ end
 function Handlers.OPEN_COFFER()
     if Api.Condition(Cond.inCombat) then
         State.deciphered = false   -- 觸發陷阱時地圖已消耗
+        State.lastFlag = Api.FlagPos()
         return "FIELD_COMBAT"
     end
     if Api.Condition(Cond.occupiedInEvent) then return nil end
@@ -763,7 +784,7 @@ function Handlers.MB_TRAVEL()
     if Api.GetEntity(Cfg.MarketBoardName) == nil then
         if not State.sent then
             Api.NavStop()
-            yield("/tp " .. Cfg.MarketAetheryte)
+            Api.Teleport(Cfg.MarketAetheryte)
             State.sent = true
         end
         if TimedOut("MB_TRAVEL") then return "ERROR" end

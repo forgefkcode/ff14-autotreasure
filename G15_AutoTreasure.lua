@@ -48,6 +48,9 @@ configs:
   AetheryteZ:
     default: 0
     description: 大水晶位置 Z
+  AetheryteRange:
+    default: 10
+    description: 離大水晶中心多近就算到（不用站到中心，底座有實體擋著）
   MarketX:
     default: -121
     description: 傳送到大水晶後要走去的市場板位置 X
@@ -167,6 +170,7 @@ local Cfg = {
     AetheryteX       = Config.Get("AetheryteX"),
     AetheryteY       = Config.Get("AetheryteY"),
     AetheryteZ       = Config.Get("AetheryteZ"),
+    AetheryteRange   = Config.Get("AetheryteRange"),
     MarketX          = Config.Get("MarketX"),
     MarketY          = Config.Get("MarketY"),
     MarketZ          = Config.Get("MarketZ"),
@@ -1180,11 +1184,18 @@ function Handlers.WORLD_TRAVEL()
             return nil
         end
 
+        -- 大水晶底座有實體擋著，走不到中心：目標設在中心往自己方向退 7 的外圍點，
+        -- 距離中心 AetheryteRange 以內就算到（移動中一進範圍就停）
         local crystal = Vector3(Cfg.AetheryteX, Cfg.AetheryteY, Cfg.AetheryteZ)
-        if Distance2D(Api.PlayerPos(), crystal) > 6 then
+        local pos = Api.PlayerPos()
+        local dist = Distance2D(pos, crystal)
+        if dist > Cfg.AetheryteRange then
             if not Api.NavRunning() then
                 Dismount()
-                Api.NavMoveTo(crystal, false)
+                local dx, dz = pos.X - crystal.X, pos.Z - crystal.Z
+                local len = math.max(dist, 0.01)
+                local x, z = crystal.X + dx / len * 7, crystal.Z + dz / len * 7
+                Api.NavMoveTo(Api.PointOnFloor(x, z) or Vector3(x, crystal.Y, z), false)
             end
             if TimedOut("WORLD_TRAVEL") then return "ERROR" end
             return nil

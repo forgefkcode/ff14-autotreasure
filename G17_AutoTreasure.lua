@@ -17,7 +17,7 @@ configs:
     description: 本次最多跑幾張，0 = 跑到沒圖
   AutoBuy:
     default: true
-    description: 圖不夠時自動到市場板買圖（維持身上 1 張已解讀 + 1 張未解讀）。事前須在市場板把地圖加入「我的最愛」和「期望清單」
+    description: 圖不夠時自動到市場板買圖（維持身上 1 張已解讀 + 1 張未解讀）。事前記得在市場板把要買的地圖加入「我的最愛」
   BmrPreset:
     default: "VBM Default"
     description: 啟動時套用的 BossMod Reborn 自動預設（/bmr ar set）；名稱打錯 BMR 會強制停用，留空 = 不切換
@@ -60,6 +60,9 @@ configs:
   MarketZ:
     default: 12
     description: 市場板位置 Z
+  FavoritesCallback:
+    default: ""
+    description: 切到市場板「我的最愛」分頁的 callback 參數（用 tools/MarketSearchTest.lua 測出後填入；空白 = 不切換）
   MarketBoardName:
     default: ""
     description: 市場板物件名稱（留空 = 自動從遊戲資料取）
@@ -189,7 +192,7 @@ local Cfg = {}
 for _, k in ipairs({
     "MapItemId", "MaxMaps", "EnterDungeon", "DecipheredItemId", "FlagWait", "AutoBuy",
     "BmrPreset", "CrossWorld", "DataCenter", "MaxMapPrice", "GilFloor", "MarketTerritoryId", "MarketAetheryte", "AetheryteX", "AetheryteY", "AetheryteZ", "AetheryteRange", "MarketX", "MarketY", "MarketZ",
-    "MarketBoardName", "DoorChoice", "AscendHeight", "WalkRadius", "DigRadius", "PortalWait",
+    "FavoritesCallback", "MarketBoardName", "DoorChoice", "AscendHeight", "WalkRadius", "DigRadius", "PortalWait",
     "PotionHpPercent", "PotionItemName", "UseSprint", "MaxErrors", "ChestName", "DungeonChestName",
     "DoorName", "PortalName", "AetheryteUrqopacha", "AetheryteKozamauka", "AetheryteYakTel",
     "AetheryteShaaloani", "AetheryteHeritageFound", "EchoLogs",
@@ -697,8 +700,26 @@ function Api.TypeIntoSearch(text)
     yield("/wait 0.3")
     yield("/send RETURN")
     yield("/wait 1.5")
-    Api.MarketOpenFirstResult()
     return method
+end
+
+-- 在市場板左側清單（我的最愛或搜尋結果）依名稱找出這個物品是第幾項（從 0 起算），找不到回 nil。
+-- 節點路徑取自社群腳本 ShamelessEnd/SomethingNeedScripts（第 i 項：i = 0 為 5，其後 51000 + i）；
+-- 名稱太長時清單會截斷成「...」，比對前半段
+function Api.FindInResults(name)
+    for i = 0, 99 do
+        local nodeId = i == 0 and 5 or (51000 + i)
+        local ok, text = pcall(function() return tostring(Addons.GetAddon("ItemSearch"):GetNode(1, 139, nodeId, 13).Text) end)
+        if not ok or text == nil or text == "" or text == "nil" then return nil end
+        if text == name then return i end
+        if text:sub(-3) == "..." and name:find(text:sub(1, -4), 1, true) == 1 then return i end
+    end
+    return nil
+end
+
+-- 點清單第 index 項，打開上架清單
+function Api.MarketOpenResult(index)
+    yield("/callback ItemSearch true 5 " .. index)
 end
 
 function Api.MarketOpenFirstResult()
@@ -968,7 +989,7 @@ function Handlers.INIT()
     end
     Log("要買的地圖：" .. Cfg.MapItemName .. "（" .. Cfg.MapItemId .. "）")
     if Cfg.AutoBuy then
-        Log("提醒：自動買圖前，請確認已在市場板把「" .. Cfg.MapItemName .. "」加入我的最愛和期望清單")
+        Log("提醒：自動買圖前，請確認已在市場板把「" .. Cfg.MapItemName .. "」加入我的最愛")
     end
     if Cfg.MarketBoardName == "" then
         Cfg.MarketBoardName = Api.MarketBoardObjectName() or "Market Board"
@@ -1375,8 +1396,8 @@ function Handlers.WORLD_TRAVEL()
 end
 
 ---------------------------------------------------------------- 買圖子流程（市場板）
--- 【事前準備，必做】要買的地圖必須先在市場板手動加入「我的最愛」和「期望清單」，
--- 否則搜尋後點不開上架清單（ItemSearchResult），買圖會卡在 MB_SEARCH。
+-- 【事前準備，必做】記得先在市場板把要買的地圖加入「我的最愛」，
+-- 腳本會在我的最愛清單裡依名稱找到它並點開；沒加入的話買圖會卡在 MB_SEARCH。
 -- 目標庫存：1 張已解讀 + 1 張未解讀（獨特物品，未解讀的不能疊）。
 -- 流程：買 1 張 → 關市場板（MB_CLOSE）→ 解讀 → 再買 1 張 → 關市場板 → 出發挖寶
 
@@ -1429,33 +1450,46 @@ function Handlers.MB_OPEN()
     if TimedOut("MB_OPEN") then return "ERROR" end
 end
 
--- 自動貼上搜尋 SEARCH_AUTO_TRIES 次都沒打開上架清單，就請使用者手動搜尋；腳本繼續等，並定時點第一筆結果
+-- 找地圖的順序（每 4 秒一輪）：
+--   1. 清單上已經有這張地圖（我的最愛分頁、或上次的搜尋結果）→ 依名稱找到那一項並點開
+--   2. 有填 FavoritesCallback → 切到我的最愛分頁
+--   3. 剪貼簿貼上搜尋（最多 SEARCH_AUTO_TRIES 次）
+--   4. 都不行就請使用者手動切到我的最愛或搜尋，腳本繼續找、找到就自動點開
 local SEARCH_AUTO_TRIES = 2
 
 function Handlers.MB_SEARCH()
     if Api.AddonReady("ItemSearchResult") then return "MB_LIST" end
+    if Elapsed() - (State.lastSearch or -10) < 4 then return nil end
+    State.lastSearch = Elapsed()
+
+    local idx = Api.FindInResults(Cfg.MapItemName)
+    if idx ~= nil then
+        Api.MarketOpenResult(idx)
+        return nil
+    end
+
+    if Cfg.FavoritesCallback ~= "" and not State.favoritesTried then
+        yield("/callback ItemSearch true " .. Cfg.FavoritesCallback)
+        State.favoritesTried = true
+        Log("切到我的最愛")
+        return nil
+    end
+
     local tries = State.searchTries or 0
     if tries < SEARCH_AUTO_TRIES then
-        if Elapsed() - (State.lastSearch or -10) > 6 then
-            local method = Api.TypeIntoSearch(Cfg.MapItemName)
-            if method == nil then
-                State.searchTries = SEARCH_AUTO_TRIES   -- 剪貼簿寫不進去，直接改手動
-            else
-                State.searchTries = tries + 1
-                Log("自動搜尋第 " .. State.searchTries .. " 次（剪貼簿：" .. method .. "）")
-            end
-            State.lastSearch = Elapsed()
-            State.lastClick = Elapsed()
+        local method = Api.TypeIntoSearch(Cfg.MapItemName)
+        if method == nil then
+            State.searchTries = SEARCH_AUTO_TRIES
+        else
+            State.searchTries = tries + 1
+            Log("自動搜尋第 " .. State.searchTries .. " 次（剪貼簿：" .. method .. "）")
         end
-    else
-        if not State.manualPrompted then
-            Log("自動搜尋沒有結果，請確認「" .. Cfg.MapItemName .. "」已加入市場板的我的最愛和期望清單，或手動搜尋，腳本會接著自動購買")
-            State.manualPrompted = true
-        end
-        if Elapsed() - (State.lastClick or -10) > 3 then
-            Api.MarketOpenFirstResult()
-            State.lastClick = Elapsed()
-        end
+        return nil
+    end
+
+    if not State.manualPrompted then
+        Log("找不到「" .. Cfg.MapItemName .. "」，請確認已加入市場板的我的最愛，並手動切到我的最愛分頁，腳本會接著自動購買")
+        State.manualPrompted = true
     end
     if TimedOut("MB_SEARCH") then return "ERROR" end
 end
@@ -1708,6 +1742,7 @@ local function Transition(next)
     State.sent, State.lastClick, State.travelPhase, State.decipherAt = false, nil, nil, nil
     State.cityTeleportSent, State.walkStarted, State.walkedToCrystal = false, false, false
     State.combatTargeted, State.lastEnemyScan = false, nil
+    State.favoritesTried = false
     State.searchTries, State.lastSearch, State.manualPrompted = 0, nil, false
 end
 

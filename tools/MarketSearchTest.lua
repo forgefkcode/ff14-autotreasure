@@ -1,12 +1,12 @@
 --[=====[
 [[SND Metadata]]
 author: forgefk
-version: 0.4.0
-description: 市場板搜尋診斷（剪貼簿貼上版）。先打開市場板（出現搜尋視窗），再執行這支腳本，把聊天框的 [MBTest] 訊息貼回來。不會購買。會覆蓋剪貼簿內容。
+version: 0.5.0
+description: 找出切到市場板「我的最愛」分頁的 callback 參數。先把地圖加入我的最愛、打開市場板（停在搜尋視窗），再執行，把聊天框的 [MBTest] 訊息貼回來。不會購買。
 configs:
   ItemId:
     default: 39591
-    description: 要搜尋的物品 ID（39591 = G15，43557 = G17）
+    description: 要找的物品 ID（39591 = G15，43557 = G17）
 [[End Metadata]]
 --]=====]
 
@@ -17,50 +17,40 @@ local function Ready(name)
     return ok and r == true
 end
 
-local function NodeText(addon, ...)
-    local path = { ... }
-    local ok, t = pcall(function() return Addons.GetAddon(addon):GetNode(table.unpack(path)).Text end)
-    if not ok then return "(讀取失敗)" end
-    return "「" .. tostring(t) .. "」"
+-- 讀左側清單第 i 項的名稱（與正式腳本 Api.FindInResults 相同的節點路徑）
+local function ListText(i)
+    local nodeId = i == 0 and 5 or (51000 + i)
+    local ok, t = pcall(function() return tostring(Addons.GetAddon("ItemSearch"):GetNode(1, 139, nodeId, 13).Text) end)
+    if not ok or t == nil or t == "nil" then return "" end
+    return t
 end
 
-local function DumpValues(addon, limit)
-    local shown = 0
-    for i = 0, limit - 1 do
-        local ok, s = pcall(function() return tostring(Addons.GetAddon(addon):GetAtkValue(i).ValueString) end)
-        if not ok then break end
-        if s ~= "" and s ~= "0" and s ~= "nil" then
-            Echo("   " .. addon .. "[" .. i .. "] = " .. s)
-            shown = shown + 1
-            if shown >= 25 then break end
-        end
+local function ListSummary()
+    local names = {}
+    for i = 0, 4 do
+        local t = ListText(i)
+        if t == "" then break end
+        table.insert(names, t)
     end
+    if #names == 0 then return "（空）" end
+    return table.concat(names, "、")
 end
 
--- 與正式腳本相同的剪貼簿寫法
-local function SetClipboard(text)
-    local ok, err = pcall(function()
-        luanet.load_assembly("System.Diagnostics.Process")
-        local script = "Set-Clipboard -Value '" .. text:gsub("'", "''") .. "'"
-        local bytes = luanet.import_type("System.Text.Encoding").Unicode:GetBytes(script)
-        local b64 = luanet.import_type("System.Convert").ToBase64String(bytes)
-        local psi = luanet.import_type("System.Diagnostics.ProcessStartInfo")()
-        psi.FileName = "powershell.exe"
-        psi.Arguments = "-NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand " .. b64
-        psi.CreateNoWindow = true
-        psi.UseShellExecute = false
-        local p = luanet.import_type("System.Diagnostics.Process").Start(psi)
-        if not p:WaitForExit(5000) or p.ExitCode ~= 0 then error("powershell failed") end
-    end)
-    if ok then return "PowerShell" end
-    Echo("   PowerShell 失敗：" .. tostring(err))
-    ok, err = pcall(function()
-        luanet.load_assembly("Dalamud.Bindings.ImGui")
-        luanet.import_type("Dalamud.Bindings.ImGui.ImGui").SetClipboardText(text)
-    end)
-    if ok then return "ImGui" end
-    Echo("   ImGui 失敗：" .. tostring(err))
+local function FindIndex(name)
+    for i = 0, 99 do
+        local t = ListText(i)
+        if t == "" then return nil end
+        if t == name or (t:sub(-3) == "..." and name:find(t:sub(1, -4), 1, true) == 1) then return i end
+    end
     return nil
+end
+
+local function CloseResult()
+    for _ = 1, 10 do
+        if not Ready("ItemSearchResult") then return end
+        yield("/callback ItemSearchResult true -1")
+        yield("/wait 0.3")
+    end
 end
 
 local itemId = Config.Get("ItemId")
@@ -68,52 +58,45 @@ local name = tostring(Excel.GetRow("Item", itemId).Name)
 Echo("物品：" .. name .. "（" .. itemId .. "）")
 
 if not Ready("ItemSearch") then
-    Echo("1. ItemSearch 沒開，請先打開市場板再執行")
+    Echo("ItemSearch 沒開，請先打開市場板再執行")
     return
 end
-Echo("1. ItemSearch 已開啟")
 
--- 2. 寫入剪貼簿
-local method = SetClipboard(name)
-if method == nil then
-    Echo("2. 剪貼簿寫入失敗，停止")
-    return
+-- 1. 打開時清單上有什麼
+Echo("1. 打開時清單：" .. ListSummary())
+local idx = FindIndex(name)
+if idx ~= nil then
+    Echo("   清單上已經有地圖（第 " .. idx .. " 項），測試點開")
+    yield("/callback ItemSearch true 5 " .. idx)
+    yield("/wait 2")
+    Echo("   上架清單" .. (Ready("ItemSearchResult") and "已打開，點開成功" or "沒有打開"))
+    CloseResult()
 end
-Echo("2. 剪貼簿寫入成功（" .. method .. "）。可以在別處 Ctrl+V 確認內容")
 
--- 3. Ctrl+A、Ctrl+V、Enter
-yield("/send CONTROL+A")
-yield("/wait 0.2")
-yield("/send CONTROL+V")
-yield("/wait 0.5")
-Echo("3. 已送出 Ctrl+A、Ctrl+V，請看搜尋框有沒有出現名稱")
-yield("/wait 1")
-yield("/send RETURN")
-yield("/wait 2")
-Echo("   按 Enter 2 秒後：node 1,140 = " .. NodeText("ItemSearch", 1, 140))
-Echo("   node 1,142,148 = " .. NodeText("ItemSearch", 1, 142, 148))
-
--- 4. 點第一筆結果
-yield("/callback ItemSearch true 5 0")
-local opened = false
-for _ = 1, 10 do
-    yield("/wait 0.5")
-    if Ready("ItemSearchResult") then opened = true break end
+-- 2. 試切到我的最愛（SearchMode.Favorites = 6）的候選 callback
+local candidates = { "1 6", "2 6", "3 6", "4 6", "6 6", "8 6", "10 6", "11 6", "12 6", "13 6", "14 6", "15 6", "16 6" }
+Echo("2. 試候選參數（每組 1.5 秒）")
+local found = nil
+for _, c in ipairs(candidates) do
+    local before = ListSummary()
+    yield("/callback ItemSearch true " .. c)
+    yield("/wait 1.5")
+    if Ready("ItemSearchResult") then CloseResult() end
+    if not Ready("ItemSearch") then
+        Echo("   「" .. c .. "」把搜尋視窗關掉了，停止測試")
+        break
+    end
+    local after = ListSummary()
+    if after ~= before then Echo("   「" .. c .. "」清單變成：" .. after) end
+    if FindIndex(name) ~= nil then
+        found = c
+        break
+    end
 end
-if not opened then
-    Echo("4. 點第一筆結果後，ItemSearchResult 沒有打開")
-    return
-end
-Echo("4. ItemSearchResult 已打開，等 3 秒讓上架資料載入")
-yield("/wait 3")
 
--- 5. 找價格放在哪
-Echo("5. 候選節點：")
-for _, p in ipairs({ { 1, 26, 4, 5 }, { 1, 26, 4, 6 }, { 1, 5 }, { 1, 29 }, { 5, 1, 10 }, { 2 }, { 26 } }) do
-    Echo("   node " .. table.concat(p, ",") .. " = " .. NodeText("ItemSearchResult", table.unpack(p)))
+if found then
+    Echo("找到了：切到我的最愛的參數是「" .. found .. "」")
+else
+    Echo("候選參數都沒有讓清單出現地圖")
 end
-Echo("   ItemSearchResult 的 AtkValues：")
-DumpValues("ItemSearchResult", 120)
-
-yield("/callback ItemSearchResult true -1")
-Echo("測試結束（已關閉上架清單，沒有購買）")
+Echo("測試結束（沒有購買）")

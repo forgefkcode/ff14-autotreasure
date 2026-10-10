@@ -87,6 +87,9 @@ configs:
   PortalWait:
     default: 10
     description: 開箱後等待傳送門出現的秒數
+  EnemySearchRange:
+    default: 100
+    description: 寶物庫內找敵人的範圍（選最近的敵人、確認是否打完都用這個）
   PotionHpPercent:
     default: 40
     description: HP 低於此百分比時喝藥（0 = 不喝）
@@ -186,6 +189,7 @@ local Cfg = {
     WalkRadius       = Config.Get("WalkRadius"),
     DigRadius        = Config.Get("DigRadius"),
     PortalWait       = Config.Get("PortalWait"),
+    EnemySearchRange = Config.Get("EnemySearchRange"),
     PotionHpPercent  = Config.Get("PotionHpPercent"),
     PotionItemName   = Config.Get("PotionItemName"),
     UseSprint        = Config.Get("UseSprint"),
@@ -543,9 +547,37 @@ function Api.ClearTarget()
 end
 
 -- 選取最近的敵人（SND 內建 /targetenemy：最近、可選取、還活著的敵對目標），只選一次不鎖定
-function Api.TargetNearestEnemy()
+-- 掃描全場物件，找 maxDistance 內最近的敵人：戰鬥 NPC、敵人類（SubKind 5 = Enemy）、可選取、還活著。
+-- 回傳 Dalamud 物件或 nil
+function Api.NearestEnemyObject(maxDistance)
+    local ok, obj = pcall(function()
+        local me = Api.PlayerPos()
+        local objs = Svc.Objects
+        local best, bestDist = nil, maxDistance * maxDistance
+        for i = 0, objs.Length - 1 do
+            local o = objs[i]
+            if o ~= nil and o.IsTargetable and not o.IsDead
+                and tostring(o.ObjectKind) == "BattleNpc" and tonumber(o.SubKind) == 5 then
+                local dx, dy, dz = o.Position.X - me.X, o.Position.Y - me.Y, o.Position.Z - me.Z
+                local d = dx * dx + dy * dy + dz * dz
+                if d <= bestDist then best, bestDist = o, d end
+            end
+        end
+        return best
+    end)
+    if ok then return obj end
+    return nil
+end
+
+-- 選最近的敵人一次（不鎖定）：先用自己的掃描（maxDistance 內），找不到再用 SND 的 /targetenemy
+function Api.TargetNearestEnemy(maxDistance)
     Api.ClearTarget()   -- 先解除舊選取（例如召喚魔法陣、寶箱），選不到敵人時才不會誤判成已選到
     yield("/wait 0.1")
+    local o = Api.NearestEnemyObject(maxDistance or 100)
+    if o ~= nil and pcall(function() Svc.Targets.Target = o end) then
+        yield("/wait 0.1")
+        if Entity.Target ~= nil then return true end
+    end
     yield("/targetenemy")
     yield("/wait 0.1")
     return Entity.Target ~= nil
@@ -553,9 +585,7 @@ end
 
 -- maxDistance 內還有沒有敵人：先解除選取再 /targetenemy，選到且夠近才算（太遠的野外怪不算，並取消選取）
 function Api.AnyEnemyLeft(maxDistance)
-    Api.ClearTarget()
-    yield("/wait 0.1")
-    if not Api.TargetNearestEnemy() then return false end
+    if not Api.TargetNearestEnemy(maxDistance) then return false end
     local t = Entity.Target
     if t ~= nil and t.DistanceTo ~= nil and t.DistanceTo <= maxDistance then return true end
     Api.ClearTarget()
@@ -1593,7 +1623,7 @@ function Handlers.DUNGEON_ROULETTE()
     if Api.Condition(Cond.inCombat) then return "DUNGEON_COMBAT" end
     if Elapsed() > 2 and Elapsed() - (State.lastEnemyScan or -10) > 2 then
         State.lastEnemyScan = Elapsed()
-        if Api.TargetNearestEnemy() then
+        if Api.TargetNearestEnemy(Cfg.EnemySearchRange) then
             State.combatTargeted = true
             Api.WrathOn()
             return "DUNGEON_COMBAT"
@@ -1609,11 +1639,11 @@ function Handlers.DUNGEON_COMBAT()
         return "DUNGEON_EXIT"
     end
     if not InDuty() then LeaveCombat(); return "DUNGEON_EXIT" end
-    -- 一進入就選最近的敵人：怪物剛出現時可能還不能選，每秒重試、最多 5 秒；選到後交給 Wrath，不保持鎖定
+    -- 一進入就選最近的敵人：怪物剛出現時可能還不能選，每秒重試、最多 15 秒；選到後交給 Wrath，不保持鎖定
     if not State.combatTargeted then
         if Elapsed() - (State.lastEnemyScan or -10) >= 1 then
             State.lastEnemyScan = Elapsed()
-            if Api.TargetNearestEnemy() or Elapsed() > 5 then State.combatTargeted = true end
+            if Api.TargetNearestEnemy(Cfg.EnemySearchRange) or Elapsed() > 15 then State.combatTargeted = true end
         end
         if not State.wrathOn then Api.WrathOn() end
         return nil
@@ -1625,7 +1655,7 @@ function Handlers.DUNGEON_COMBAT()
     end
     -- 脫離戰鬥滿 3 秒才確認還有沒有敵人（戰鬥中不解除、不重選）
     if Elapsed() - (State.lastInCombat or 0) < 3 then return nil end
-    if Api.AnyEnemyLeft(50) then
+    if Api.AnyEnemyLeft(Cfg.EnemySearchRange) then
         State.lastInCombat = Elapsed()
         if not State.wrathOn then Api.WrathOn() end
         return nil

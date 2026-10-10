@@ -701,8 +701,13 @@ local function Distance2D(a, b)
     return math.sqrt(dx * dx + dz * dz)
 end
 
+-- 寶物庫（The Shifting Gymnasion Agonon）的地區 ID，取自 XIVAPI ContentFinderCondition
+local VAULT_TERRITORY = 1123
+
+-- 是否在寶物庫內：看所在地區。不用角色狀態 34 / 56（被副本綁定），
+-- 野外觸發陷阱後那個狀態也會亮，會誤判成已進副本而跳過傳送魔紋
 local function InDuty()
-    return Api.Condition(Cond.boundByDuty) or Api.Condition(Cond.boundByDuty56)
+    return Api.Territory() == VAULT_TERRITORY
 end
 
 local function Busy()

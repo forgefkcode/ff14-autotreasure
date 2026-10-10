@@ -63,6 +63,9 @@ configs:
   DoorChoice:
     default: "Random"
     description: 寶物庫選門方式 Random / First（第一個找到的門）
+  AscendHeight:
+    default: 100
+    description: 傳送到藏寶地區上坐騎後，先往上飛多高再開始找路
   DigRadius:
     default: 3
     description: 距離旗標多近開始挖寶
@@ -171,7 +174,7 @@ local Cfg = {}
 for _, k in ipairs({
     "MapItemId", "MaxMaps", "EnterDungeon", "StartWithDeciphered", "FlagWait", "AutoBuy",
     "BmrPreset", "CrossWorld", "DataCenter", "MaxMapPrice", "GilFloor", "MarketTerritoryId", "MarketAetheryte", "MarketX", "MarketY", "MarketZ",
-    "MarketBoardName", "DoorChoice", "DigRadius", "PortalWait",
+    "MarketBoardName", "DoorChoice", "AscendHeight", "DigRadius", "PortalWait",
     "PotionHpPercent", "PotionItemName", "UseSprint", "MaxErrors", "ChestName", "DungeonChestName",
     "DoorName", "PortalName", "AetheryteUrqopacha", "AetheryteKozamauka", "AetheryteYakTel",
     "AetheryteShaaloani", "AetheryteHeritageFound", "EchoLogs",
@@ -332,6 +335,13 @@ end
 
 function Api.NavRunning()
     return IPC.vnavmesh.IsRunning() or IPC.vnavmesh.PathfindInProgress()
+end
+
+-- 從 (x, 1024, z) 往下找 vnavmesh 地面，取得該點真正的高度（寫法同 pot0to 腳本）。找不到回 nil
+function Api.PointOnFloor(x, z)
+    local ok, p = pcall(function() return IPC.vnavmesh.PointOnFloor(Vector3(x, 1024, z), false, 5) end)
+    if ok and p ~= nil then return p end
+    return nil
 end
 
 function Api.NavMoveTo(pos, fly)
@@ -712,7 +722,7 @@ end
 
 -- 下坐騎：重複執行直到真的下來（飛行中第一次只會降落，要再按一次）。回傳是否已下坐騎
 local function Dismount()
-    for _ = 1, 8 do
+    for _ = 1, 20 do   -- 從高空下來要先降落，給到 20 秒
         if not Api.Condition(Cond.mounted) then return true end
         Api.GeneralAction(GA.dismount)
         yield("/wait 1")
@@ -954,8 +964,17 @@ function Handlers.LOCATE()
     end
 end
 
+-- 旗標只有平面座標（X、Z），高度不對；目的地在高處時直接飛過去會找不到路。
+-- 用 vnavmesh 從旗標正上方往下找地面取得真正高度；找不到就維持目前高度飛到旗標正上方，到了下坐騎自己降落
+local function FlagTarget()
+    local f = Api.FlagPos()
+    local floor = Api.PointOnFloor(f.X, f.Z)
+    if floor ~= nil then return Vector3(floor.X, floor.Y + 1, floor.Z) end
+    return Vector3(f.X, Api.PlayerPos().Y, f.Z)
+end
+
 local function FlyToFlag()
-    Api.NavMoveTo(Api.FlagPos(), true)
+    Api.NavMoveTo(FlagTarget(), true)
 end
 
 function Handlers.TRAVEL()
@@ -985,11 +1004,28 @@ function Handlers.TRAVEL()
     end
 
     if not Api.NavReady() then return nil end
+
+    -- 先上升：上坐騎後垂直往上飛 AscendHeight，最多 15 秒，再開始找路
+    if State.travelPhase ~= "fly" then
+        if State.travelPhase == nil then
+            if not Api.PlayerReady() then return nil end
+            if not Mount() then return nil end
+            local p = Api.PlayerPos()
+            Api.NavMoveTo(Vector3(p.X, p.Y + Cfg.AscendHeight, p.Z), true)
+            State.travelPhase, State.ascendAt = "ascend", os.clock()
+            Log("上升中")
+            return nil
+        end
+        if Api.NavRunning() and os.clock() - State.ascendAt < 15 then return nil end
+        Api.NavStop()
+        State.travelPhase = "fly"
+        State.lastPos = nil
+    end
+
     if not Api.NavRunning() then
         -- 傳送後先確認角色可操作、已上坐騎，才開始飛（沒上坐騎時飛行路線不會動）
         if not Api.PlayerReady() then return nil end
         if not Mount() then return nil end
-        if Cfg.UseSprint and not Api.Condition(Cond.mounted) then Api.GeneralAction(GA.sprint) end
         FlyToFlag()
         return nil
     end
@@ -1017,7 +1053,9 @@ function Handlers.DIG()
         if State.digOffsetIdx > DIG_RETRIES then return "ERROR" end
         local f, o = Api.FlagPos(), DIG_OFFSETS[State.digOffsetIdx + 1]
         Log("沒挖到，偏移再挖 " .. State.digOffsetIdx)
-        Api.NavMoveTo(Vector3(f.X + o[1], f.Y, f.Z + o[2]), false)
+        local x, z = f.X + o[1], f.Z + o[2]
+        local floor = Api.PointOnFloor(x, z)
+        Api.NavMoveTo(floor or Vector3(x, Api.PlayerPos().Y, z), false)
         return "DIG"
     end
 end
@@ -1454,7 +1492,7 @@ local function Transition(next)
     State.current = next
     State.enteredAt = os.clock()
     State.lastPos, State.rePathed = nil, false
-    State.sent, State.lastClick = false, nil
+    State.sent, State.lastClick, State.travelPhase = false, nil, nil
     State.searchTries, State.lastSearch, State.manualPrompted = 0, nil, false
 end
 

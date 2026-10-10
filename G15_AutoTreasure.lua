@@ -404,7 +404,8 @@ end
 -- 查 Universalis：資料中心內這張地圖最便宜的上架（只算單張、不超過 MaxMapPrice、不在 excluded 裡的伺服器）。
 -- 回傳 { world = 伺服器ID, price = 單價 }；查不到回 nil。Universalis 的資料是玩家上傳的，可能有幾小時延遲
 function Api.CheapestWorld(itemId, excluded)
-    local dc = luanet.import_type("System.Uri").EscapeDataString(Cfg.DataCenter)
+    -- 網址編碼用純 Lua 做（System.Uri 所在的組件 SND 沒載入，import_type 會拿到 nil）
+    local dc = Cfg.DataCenter:gsub("[^%w%-_%.~]", function(c) return string.format("%%%02X", string.byte(c)) end)
     local url = string.format(
         "https://universalis.app/api/v2/%s/%d?listings=50&entries=0&fields=listings.worldID%%2Clistings.pricePerUnit%%2Clistings.quantity",
         dc, itemId)
@@ -1121,7 +1122,11 @@ end
 function Handlers.PICK_WORLD()
     EnsureWrathOff()
     State.worldChosen = true
-    local best = Api.CheapestWorld(Cfg.MapItemId, State.badWorlds or {})
+    local ok, best = pcall(Api.CheapestWorld, Cfg.MapItemId, State.badWorlds or {})
+    if not ok then
+        LogError("查價失敗：" .. tostring(best) .. "，留在目前伺服器買")
+        return "CHECK_MAP"
+    end
     if best == nil then
         Log("Universalis 查不到 MaxMapPrice 以內的單張上架，留在目前伺服器買")
         return "CHECK_MAP"

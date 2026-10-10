@@ -403,10 +403,10 @@ function Api.AddonNodeText(addon, ...)
     return tostring(node.Text)
 end
 
+-- 搜尋參數取自 extrahase/SND_repo（2025-10 仍在更新）；舊版的 "0 -1 0 ... 100 100 34" 已失效
+-- 名稱不能有空白（「陳舊的地圖G15」沒有）
 function Api.MarketSearch(itemName)
-    yield("/callback ItemSearch true 7 -1 0 -1 -1 -1 -1 -1")   -- 清空搜尋條件
-    yield("/wait 0.5")
-    yield(string.format('/callback ItemSearch true 0 -1 0 "%s" "%s" 100 100 34', itemName, itemName))
+    yield(string.format('/callback ItemSearch true 9 1 2 "%s" "%s" 5 6 7', itemName, itemName))
 end
 
 function Api.MarketOpenFirstResult()
@@ -890,10 +890,7 @@ function Handlers.MB_TRAVEL()
 end
 
 function Handlers.MB_OPEN()
-    if Api.AddonReady("ItemSearch") then
-        Api.MarketSearch(Cfg.MapItemName)
-        return "MB_SEARCH"
-    end
+    if Api.AddonReady("ItemSearch") then return "MB_SEARCH" end
     -- 市場板離站位太遠時，ApproachAndInteract 會先走近再互動
     if not State.sent and not Api.Condition(Cond.occupiedInEvent) then
         State.sent = ApproachAndInteract(Cfg.MarketBoardName)
@@ -903,8 +900,10 @@ end
 
 function Handlers.MB_SEARCH()
     if Api.AddonReady("ItemSearchResult") then return "MB_LIST" end
-    -- 搜尋結果需要時間載入；每 3 秒點一次第 1 個結果，直到清單打開
-    if Elapsed() - (State.lastClick or -10) > 3 and Elapsed() > 1.5 then
+    -- 每 4 秒重送一次搜尋，0.5 秒後點第 1 個結果，直到上架清單打開
+    if Elapsed() - (State.lastClick or -10) > 4 then
+        Api.MarketSearch(Cfg.MapItemName)
+        yield("/wait 0.5")
         Api.MarketOpenFirstResult()
         State.lastClick = Elapsed()
     end

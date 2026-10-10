@@ -1,8 +1,8 @@
 --[=====[
 [[SND Metadata]]
 author: forgefk
-version: 0.1.0
-description: 市場板搜尋診斷。先打開市場板（出現搜尋視窗），再執行這支腳本，把聊天框的 [MBTest] 訊息貼回來。
+version: 0.2.0
+description: 市場板搜尋診斷。先打開市場板（出現搜尋視窗），再執行這支腳本，把聊天框的 [MBTest] 訊息貼回來。不會購買。
 configs:
   ItemId:
     default: 39591
@@ -21,58 +21,61 @@ local function NodeText(addon, ...)
     local path = { ... }
     local ok, t = pcall(function() return Addons.GetAddon(addon):GetNode(table.unpack(path)).Text end)
     if not ok then return "(讀取失敗)" end
-    return tostring(t)
+    return "「" .. tostring(t) .. "」"
 end
 
--- 印出視窗的 AtkValues（字串與數字），用來看搜尋條件和結果有沒有寫進去
+-- 逐一讀 AtkValue（用索引，不用列舉），只印非空的
 local function DumpValues(addon, limit)
-    local ok, err = pcall(function()
-        local i = 0
-        for v in luanet.each(Addons.GetAddon(addon).AtkValues) do
-            local s = tostring(v.ValueString)
-            if s ~= "" and s ~= "0" then Echo(addon .. "[" .. i .. "] = " .. s) end
-            i = i + 1
-            if i >= limit then break end
+    local shown = 0
+    for i = 0, limit - 1 do
+        local ok, s = pcall(function() return tostring(Addons.GetAddon(addon):GetAtkValue(i).ValueString) end)
+        if not ok then break end
+        if s ~= "" and s ~= "0" and s ~= "nil" then
+            Echo("   " .. addon .. "[" .. i .. "] = " .. s)
+            shown = shown + 1
+            if shown >= 25 then break end
         end
-        Echo(addon .. " 共讀了 " .. i .. " 個 AtkValue")
-    end)
-    if not ok then Echo(addon .. " AtkValues 讀取失敗：" .. tostring(err)) end
+    end
 end
 
 local itemId = Config.Get("ItemId")
 local name = tostring(Excel.GetRow("Item", itemId).Name)
 Echo("物品：" .. name .. "（" .. itemId .. "）")
 
--- 1. 搜尋視窗是否開著
 if not Ready("ItemSearch") then
     Echo("1. ItemSearch 沒開，請先打開市場板再執行")
     return
 end
 Echo("1. ItemSearch 已開啟")
 
--- 2. 清空搜尋條件
-yield("/callback ItemSearch true 7 -1 0 -1 -1 -1 -1 -1")
-yield("/wait 1")
-Echo("2. 已送出清空條件")
-
--- 3. 送出搜尋（社群腳本的參數）
-yield(string.format('/callback ItemSearch true 0 -1 0 "%s" "%s" 100 100 34', name, name))
-yield("/wait 3")
-Echo("3. 已送出搜尋，3 秒後節點文字：")
+-- 2. 搜尋（新參數，取自 extrahase/SND_repo）
+yield(string.format('/callback ItemSearch true 9 1 2 "%s" "%s" 5 6 7', name, name))
+yield("/wait 2")
+Echo("2. 已送出搜尋，2 秒後：")
 Echo("   node 1,140 = " .. NodeText("ItemSearch", 1, 140))
 Echo("   node 1,142,148 = " .. NodeText("ItemSearch", 1, 142, 148))
-DumpValues("ItemSearch", 60)
 
--- 4. 點第一筆結果，看上架清單會不會打開
+-- 3. 點第一筆結果
 yield("/callback ItemSearch true 5 0")
-yield("/wait 3")
-if Ready("ItemSearchResult") then
-    Echo("4. ItemSearchResult 已打開")
-    Echo("   第一筆單價 node 1,26,4,5 = " .. NodeText("ItemSearchResult", 1, 26, 4, 5))
-    Echo("   第一筆數量 node 1,26,4,6 = " .. NodeText("ItemSearchResult", 1, 26, 4, 6))
-    Echo("   訊息 node 1,5 = " .. NodeText("ItemSearchResult", 1, 5))
-    DumpValues("ItemSearchResult", 40)
-else
-    Echo("4. 點第一筆結果後，ItemSearchResult 沒有打開")
+local opened = false
+for _ = 1, 10 do
+    yield("/wait 0.5")
+    if Ready("ItemSearchResult") then opened = true break end
 end
-Echo("測試結束")
+if not opened then
+    Echo("3. 點第一筆結果後，ItemSearchResult 沒有打開")
+    return
+end
+Echo("3. ItemSearchResult 已打開，等 3 秒讓上架資料載入")
+yield("/wait 3")
+
+-- 4. 找價格放在哪：舊腳本用過的幾種節點位置都讀一次
+Echo("4. 候選節點：")
+for _, p in ipairs({ { 1, 26, 4, 5 }, { 1, 26, 4, 6 }, { 1, 5 }, { 1, 29 }, { 5, 1, 10 }, { 2 }, { 26 } }) do
+    Echo("   node " .. table.concat(p, ",") .. " = " .. NodeText("ItemSearchResult", table.unpack(p)))
+end
+Echo("   ItemSearchResult 的 AtkValues：")
+DumpValues("ItemSearchResult", 120)
+
+yield("/callback ItemSearchResult true -1")
+Echo("測試結束（已關閉上架清單，沒有購買）")

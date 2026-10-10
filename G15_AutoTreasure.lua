@@ -18,6 +18,9 @@ configs:
   AutoBuy:
     default: true
     description: 圖不夠時自動到市場板買圖（維持身上 1 張已解讀 + 1 張未解讀）。事前須在市場板把地圖加入「我的最愛」和「期望清單」
+  BmrPreset:
+    default: "VBM Default"
+    description: 啟動時套用的 BossMod Reborn 自動預設（/bmr ar set）；名稱打錯 BMR 會強制停用，留空 = 不切換
   CrossWorld:
     default: true
     description: 每輪開始前查 Universalis，傳送到資料中心內地圖最便宜的伺服器買圖並挖寶（需要 Lifestream）
@@ -142,6 +145,7 @@ local Cfg = {
     StartWithDeciphered = Config.Get("StartWithDeciphered"),
     FlagWait   = Config.Get("FlagWait"),
     AutoBuy          = Config.Get("AutoBuy"),
+    BmrPreset        = Config.Get("BmrPreset"),
     CrossWorld       = Config.Get("CrossWorld"),
     DataCenter       = Config.Get("DataCenter"),
     MaxMapPrice      = Config.Get("MaxMapPrice"),
@@ -406,6 +410,27 @@ function Api.CheapestWorld(itemId, excluded)
     return best
 end
 
+-- 切換成戰士：先找職業是戰士的套裝並裝備，找不到再用 /gs change <職業名稱>
+function Api.SwitchToWarrior()
+    local ok = pcall(function()
+        local sets = Player.Gearsets
+        for i = 0, sets.Count - 1 do
+            local g = sets[i]
+            if g.IsValid and g.ClassJob == WARRIOR_JOB_ID then
+                g:Equip()
+                return
+            end
+        end
+        error("no warrior gearset")
+    end)
+    if ok then return true end
+    local name = nil
+    pcall(function() name = tostring(Excel.GetRow("ClassJob", WARRIOR_JOB_ID).Name) end)
+    if name == nil or name == "" or name == "nil" then return false end
+    yield("/gs change " .. name)
+    return true
+end
+
 -- 物品名稱（客戶端語系），用來在市場板搜尋，避免手填名稱打錯而搜到別張圖
 function Api.ItemName(itemId)
     local ok, name = pcall(function() return tostring(Excel.GetRow("Item", itemId).Name) end)
@@ -442,8 +467,16 @@ function Api.LifestreamBusy()
     return ok and busy == true
 end
 
-function Api.WrathOn()  yield("/wrath auto on")  end
-function Api.WrathOff() yield("/wrath auto off") end
+-- 開關 Wrath 時同步記錄狀態，CombatTick / TRAVEL 依 State.wrathOn 判斷要不要再開
+function Api.WrathOn()
+    yield("/wrath auto on")
+    State.wrathOn = true
+end
+
+function Api.WrathOff()
+    yield("/wrath auto off")
+    State.wrathOn = false
+end
 
 -- TODO 待確認：解讀視窗的 addon 名稱與 callback 參數
 function Api.SelectMapInDecipherWindow()
@@ -616,6 +649,7 @@ end
 
 local function StopAutomation()
     Api.WrathOff()
+    State.wrathOn = false
     Api.NavStop()
 end
 
@@ -673,6 +707,7 @@ local function ApproachAndInteract(name)
     end
     Api.NavStop()
     Api.WrathOff()   -- 互動保護
+    State.wrathOn = false
     if not Dismount() then return false end   -- 騎著坐騎不能互動
     Api.InteractTarget()
     return true
@@ -710,6 +745,14 @@ end
 -- 4. 狀態處理函式
 -------------------------------------------------------------------------------
 
+-- 買圖、換伺服器、解讀期間 Wrath 一律關閉（傳送到藏寶地區後才在 TRAVEL 開啟）
+local function EnsureWrathOff()
+    if State.wrathOn ~= false then
+        Api.WrathOff()
+        State.wrathOn = false
+    end
+end
+
 local Handlers = {}
 
 function Handlers.INIT()
@@ -722,8 +765,20 @@ function Handlers.INIT()
         return "END"
     end
     if Api.JobId() ~= WARRIOR_JOB_ID then
-        LogError("目前職業不是戰士")
-        return "END"
+        Log("切換成戰士")
+        Api.SwitchToWarrior()
+        for _ = 1, 10 do
+            yield("/wait 0.5")
+            if Api.JobId() == WARRIOR_JOB_ID then break end
+        end
+        if Api.JobId() ~= WARRIOR_JOB_ID then
+            LogError("切換戰士失敗：請先建立戰士的套裝")
+            return "END"
+        end
+    end
+    if Cfg.BmrPreset ~= nil and Cfg.BmrPreset ~= "" then
+        yield("/bmr ar set " .. Cfg.BmrPreset)
+        Log("BossMod Reborn 預設：" .. Cfg.BmrPreset)
     end
     if Cfg.MapItemId == 0 then
         LogError("未設定 MapItemId")
@@ -755,6 +810,7 @@ function Handlers.INIT()
         Log("提醒：沒偵測到 XivTreasureParty，解讀後需手動插旗")
     end
     Api.WrathOff()
+    State.wrathOn = false
     return "CHECK_MAP"
 end
 
@@ -795,6 +851,7 @@ function Handlers.CHECK_MAP()
 end
 
 function Handlers.DECIPHER()
+    EnsureWrathOff()
     if not State.decipherSent then
         Api.GeneralAction(GA.decipher)
         State.decipherSent = true
@@ -857,6 +914,13 @@ function Handlers.TRAVEL()
         return nil
     end
     State.teleportSent = false
+
+    -- 已在藏寶地區：開啟 Wrath（買圖、傳送期間是關的）
+    if not State.wrathOn then
+        Api.WrathOn()
+        State.wrathOn = true
+        Log("已到藏寶地區，開啟 Wrath")
+    end
 
     local flag = Api.FlagPos()
     if Distance2D(Api.PlayerPos(), flag) < Cfg.DigRadius and not Api.NavRunning() then
@@ -998,6 +1062,7 @@ end
 
 -- 查 Universalis 選最便宜的伺服器；已經在那裡就直接買，查不到就留在目前伺服器
 function Handlers.PICK_WORLD()
+    EnsureWrathOff()
     State.worldChosen = true
     local best = Api.CheapestWorld(Cfg.MapItemId, State.badWorlds or {})
     if best == nil then
@@ -1013,6 +1078,7 @@ end
 
 -- 用 Lifestream 傳送到目標伺服器，等到達且角色可操作
 function Handlers.WORLD_TRAVEL()
+    EnsureWrathOff()
     if Api.CurrentWorldId() == State.targetWorld and Api.PlayerReady() and not Api.LifestreamBusy() then
         Log("已到達 " .. State.targetWorldName)
         State.worldTrips = (State.worldTrips or 0) + 1
@@ -1035,6 +1101,7 @@ end
 
 -- 到市場板：傳送到城市大水晶 → vnavmesh 走到 MarketX/Y/Z → 開市場板
 function Handlers.MB_TRAVEL()
+    EnsureWrathOff()
     if Busy() then return nil end
 
     if Api.Territory() ~= Cfg.MarketTerritoryId then

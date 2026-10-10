@@ -39,6 +39,15 @@ configs:
   MarketAetheryte:
     default: ""
     description: 買圖城市的以太之光名稱（留空 = 依 MarketTerritoryId 自動從遊戲資料取）
+  AetheryteX:
+    default: -84
+    description: 買圖城市大水晶的位置 X（換伺服器前要走到這附近；預設是利姆薩·羅敏薩下層甲板）
+  AetheryteY:
+    default: 20.8
+    description: 大水晶位置 Y（高度）
+  AetheryteZ:
+    default: 0
+    description: 大水晶位置 Z
   MarketX:
     default: -121
     description: 傳送到大水晶後要走去的市場板位置 X
@@ -155,6 +164,9 @@ local Cfg = {
     GilFloor         = Config.Get("GilFloor"),
     MarketTerritoryId = Config.Get("MarketTerritoryId"),
     MarketAetheryte  = Config.Get("MarketAetheryte"),
+    AetheryteX       = Config.Get("AetheryteX"),
+    AetheryteY       = Config.Get("AetheryteY"),
+    AetheryteZ       = Config.Get("AetheryteZ"),
     MarketX          = Config.Get("MarketX"),
     MarketY          = Config.Get("MarketY"),
     MarketZ          = Config.Get("MarketZ"),
@@ -368,18 +380,23 @@ function Api.WorldName(worldId)
     return nil
 end
 
--- HTTP GET：先用 .NET HttpClient，失敗改用 PowerShell。回傳內容字串或 nil
+-- HTTP GET：先用 .NET HttpClient，失敗改用 PowerShell。回傳 (內容, nil) 或 (nil, 錯誤原因)
 function Api.HttpGet(url)
     local ok, body = pcall(function()
         luanet.load_assembly("System.Net.Http")
-        local client = luanet.import_type("System.Net.Http.HttpClient")()
-        client.Timeout = luanet.import_type("System.TimeSpan").FromSeconds(15)
+        local clientType = luanet.import_type("System.Net.Http.HttpClient")
+        if clientType == nil then error("找不到 HttpClient") end
+        local client = clientType()
+        pcall(function() client.Timeout = luanet.import_type("System.TimeSpan").FromSeconds(15) end)
         local result = client:GetStringAsync(url).Result
         client:Dispose()
         return tostring(result)
     end)
-    if ok and body ~= nil and body ~= "" then return body end
-    ok, body = pcall(function()
+    if ok and body ~= nil and body ~= "" then return body, nil end
+    local httpErr = ok and "回應是空的" or tostring(body)
+
+    local psOut = nil
+    ok, psOut = pcall(function()
         luanet.load_assembly("System.Diagnostics.Process")
         local encoding = luanet.import_type("System.Text.Encoding")
         local script = "[Console]::OutputEncoding=[Text.Encoding]::UTF8; "
@@ -397,20 +414,21 @@ function Api.HttpGet(url)
         p:WaitForExit(20000)
         return tostring(out)
     end)
-    if ok and body ~= nil and body ~= "" then return body end
-    return nil
+    if ok and psOut ~= nil and psOut:find("listings", 1, true) then return psOut, nil end
+    local psErr = ok and ("回應：" .. (psOut or ""):sub(1, 80)) or tostring(psOut)
+    return nil, "HttpClient：" .. httpErr .. "；PowerShell：" .. psErr
 end
 
 -- 查 Universalis：資料中心內這張地圖最便宜的上架（只算單張、不超過 MaxMapPrice、不在 excluded 裡的伺服器）。
--- 回傳 { world = 伺服器ID, price = 單價 }；查不到回 nil。Universalis 的資料是玩家上傳的，可能有幾小時延遲
+-- 回傳 { world = 伺服器ID, price = 單價 }；查不到回 (nil, 原因)。Universalis 的資料是玩家上傳的，可能有幾小時延遲
 function Api.CheapestWorld(itemId, excluded)
     -- 網址編碼用純 Lua 做（System.Uri 所在的組件 SND 沒載入，import_type 會拿到 nil）
     local dc = Cfg.DataCenter:gsub("[^%w%-_%.~]", function(c) return string.format("%%%02X", string.byte(c)) end)
     local url = string.format(
         "https://universalis.app/api/v2/%s/%d?listings=50&entries=0&fields=listings.worldID%%2Clistings.pricePerUnit%%2Clistings.quantity",
         dc, itemId)
-    local body = Api.HttpGet(url)
-    if body == nil then return nil end
+    local body, err = Api.HttpGet(url)
+    if body == nil then return nil, "連不上 Universalis（" .. tostring(err) .. "）" end
     local best = nil
     for obj in body:gmatch("{[^{}]*}") do
         local price = tonumber(obj:match('"pricePerUnit":(%d+)'))
@@ -420,7 +438,8 @@ function Api.CheapestWorld(itemId, excluded)
             if best == nil or price < best.price then best = { world = world, price = price } end
         end
     end
-    return best
+    if best == nil then return nil, "Universalis 上沒有 MaxMapPrice 以內的單張上架" end
+    return best, nil
 end
 
 -- 切換成戰士：先找職業是戰士的套裝並裝備，找不到再用 /gs change <職業名稱>
@@ -1122,13 +1141,13 @@ end
 function Handlers.PICK_WORLD()
     EnsureWrathOff()
     State.worldChosen = true
-    local ok, best = pcall(Api.CheapestWorld, Cfg.MapItemId, State.badWorlds or {})
+    local ok, best, reason = pcall(Api.CheapestWorld, Cfg.MapItemId, State.badWorlds or {})
     if not ok then
         LogError("查價失敗：" .. tostring(best) .. "，留在目前伺服器買")
         return "CHECK_MAP"
     end
     if best == nil then
-        Log("Universalis 查不到 MaxMapPrice 以內的單張上架，留在目前伺服器買")
+        Log(tostring(reason) .. "，留在目前伺服器買")
         return "CHECK_MAP"
     end
     local name = Api.WorldName(best.world) or tostring(best.world)
@@ -1138,7 +1157,7 @@ function Handlers.PICK_WORLD()
     return "WORLD_TRAVEL"
 end
 
--- 用 Lifestream 傳送到目標伺服器，等到達且角色可操作
+-- 換伺服器：Lifestream 要在大水晶附近才能換，所以先傳送到買圖城市 → 走到大水晶旁 → 再換伺服器
 function Handlers.WORLD_TRAVEL()
     EnsureWrathOff()
     if Api.CurrentWorldId() == State.targetWorld and Api.PlayerReady() and not Api.LifestreamBusy() then
@@ -1146,9 +1165,34 @@ function Handlers.WORLD_TRAVEL()
         State.worldTrips = (State.worldTrips or 0) + 1
         return "CHECK_MAP"
     end
-    if not State.sent and Api.PlayerReady() and not Api.LifestreamBusy() then
+    if Busy() then return nil end
+
+    if not State.sent then
+        if Api.Territory() ~= Cfg.MarketTerritoryId then
+            if not State.cityTeleportSent then
+                local dest = Api.ResolveAetheryte(Cfg.MarketAetheryte, Cfg.MarketTerritoryId)
+                if dest == nil then return "ERROR" end
+                Api.NavStop()
+                Api.Teleport(dest)
+                State.cityTeleportSent = true
+            end
+            if TimedOut("WORLD_TRAVEL") then return "ERROR" end
+            return nil
+        end
+
+        local crystal = Vector3(Cfg.AetheryteX, Cfg.AetheryteY, Cfg.AetheryteZ)
+        if Distance2D(Api.PlayerPos(), crystal) > 6 then
+            if not Api.NavRunning() then
+                Dismount()
+                Api.NavMoveTo(crystal, false)
+            end
+            if TimedOut("WORLD_TRAVEL") then return "ERROR" end
+            return nil
+        end
+
+        if not Api.PlayerReady() or Api.LifestreamBusy() then return nil end
         Api.NavStop()
-        Log("傳送到 " .. State.targetWorldName)
+        Log("在大水晶旁，換伺服器到 " .. State.targetWorldName)
         Api.Teleport(State.targetWorldName)
         State.sent = true
     end
@@ -1434,6 +1478,7 @@ local function Transition(next)
     State.enteredAt = os.clock()
     State.lastPos, State.rePathed = nil, false
     State.sent, State.lastClick, State.travelPhase, State.decipherAt = false, nil, nil, nil
+    State.cityTeleportSent = false
     State.searchTries, State.lastSearch, State.manualPrompted = 0, nil, false
 end
 

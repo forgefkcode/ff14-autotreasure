@@ -436,10 +436,11 @@ function Api.AddonNodeText(addon, ...)
     return tostring(node.Text)
 end
 
--- 搜尋參數取自 extrahase/SND_repo（2025-10 仍在更新）；舊版的 "0 -1 0 ... 100 100 34" 已失效
--- 名稱不能有空白（「陳舊的地圖G15」沒有）
+-- 搜尋參數取自 extrahase/SND_repo（2025-10 仍在更新）；舊版的 "0 -1 0 ... 100 100 34" 已失效。
+-- 名稱不加引號：SND 的 /callback 解析器遇到 "單一字詞" 這種頭尾都有引號的參數會出錯
+-- （把兩個名稱併成一個參數），不加引號時非數字的參數會直接當字串。名稱不能有空白。
 function Api.MarketSearch(itemName)
-    yield(string.format('/callback ItemSearch true 9 1 2 "%s" "%s" 5 6 7', itemName, itemName))
+    yield(string.format("/callback ItemSearch true 9 1 2 %s %s 5 6 7", itemName, itemName))
 end
 
 function Api.MarketOpenFirstResult()

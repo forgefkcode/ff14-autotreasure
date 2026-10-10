@@ -1,7 +1,7 @@
 --[=====[
 [[SND Metadata]]
 author: forgefk
-version: 0.2.0
+version: 0.3.0
 description: 市場板搜尋診斷。先打開市場板（出現搜尋視窗），再執行這支腳本，把聊天框的 [MBTest] 訊息貼回來。不會購買。
 configs:
   ItemId:
@@ -48,8 +48,8 @@ if not Ready("ItemSearch") then
 end
 Echo("1. ItemSearch 已開啟")
 
--- 2. 搜尋（新參數，取自 extrahase/SND_repo）
-yield(string.format('/callback ItemSearch true 9 1 2 "%s" "%s" 5 6 7', name, name))
+-- 2. 搜尋（新參數，取自 extrahase/SND_repo）。名稱不加引號，避開 SND /callback 解析引號的 bug
+yield(string.format("/callback ItemSearch true 9 1 2 %s %s 5 6 7", name, name))
 yield("/wait 2")
 Echo("2. 已送出搜尋，2 秒後：")
 Echo("   node 1,140 = " .. NodeText("ItemSearch", 1, 140))

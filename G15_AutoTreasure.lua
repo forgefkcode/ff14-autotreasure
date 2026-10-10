@@ -18,6 +18,12 @@ configs:
   AutoBuy:
     default: true
     description: 圖不夠時自動到市場板買圖（維持身上 1 張已解讀 + 1 張未解讀）。事前須在市場板把地圖加入「我的最愛」和「期望清單」
+  CrossWorld:
+    default: true
+    description: 每輪開始前查 Universalis，傳送到資料中心內地圖最便宜的伺服器買圖並挖寶（需要 Lifestream）
+  DataCenter:
+    default: "陸行鳥"
+    description: 要比價的資料中心（Universalis 上的名稱，繁中服是「陸行鳥」）
   MaxMapPrice:
     default: 0
     description: 每張圖最多付多少 gil（AutoBuy 開啟時必填，0 = 未設定，INIT 會停止）
@@ -136,6 +142,8 @@ local Cfg = {
     StartWithDeciphered = Config.Get("StartWithDeciphered"),
     FlagWait   = Config.Get("FlagWait"),
     AutoBuy          = Config.Get("AutoBuy"),
+    CrossWorld       = Config.Get("CrossWorld"),
+    DataCenter       = Config.Get("DataCenter"),
     MaxMapPrice      = Config.Get("MaxMapPrice"),
     GilFloor         = Config.Get("GilFloor"),
     MarketTerritoryId = Config.Get("MarketTerritoryId"),
@@ -174,6 +182,7 @@ local Timeout = {
     PORTAL_CHECK     = Cfg.PortalWait,
     ENTER_DUNGEON    = 60,
     DEAD             = 120,
+    WORLD_TRAVEL     = 300,
     MB_TRAVEL        = 120,
     MB_OPEN          = 15,
     MB_SEARCH        = 180,   -- 含等待手動搜尋的時間
@@ -329,6 +338,74 @@ function Api.MarketBoardObjectName()
     return nil
 end
 
+-- 目前所在伺服器 ID（SND EntityWrapper.CurrentWorld）
+function Api.CurrentWorldId()
+    local ok, id = pcall(function() return Entity.Player.CurrentWorld end)
+    if ok and id ~= nil then return tonumber(id) end
+    return nil
+end
+
+-- 伺服器名稱（客戶端語系），Lifestream 跨伺服器傳送用
+function Api.WorldName(worldId)
+    local ok, name = pcall(function() return tostring(Excel.GetRow("World", worldId).Name) end)
+    if ok and name ~= nil and name ~= "" and name ~= "nil" then return name end
+    return nil
+end
+
+-- HTTP GET：先用 .NET HttpClient，失敗改用 PowerShell。回傳內容字串或 nil
+function Api.HttpGet(url)
+    local ok, body = pcall(function()
+        luanet.load_assembly("System.Net.Http")
+        local client = luanet.import_type("System.Net.Http.HttpClient")()
+        client.Timeout = luanet.import_type("System.TimeSpan").FromSeconds(15)
+        local result = client:GetStringAsync(url).Result
+        client:Dispose()
+        return tostring(result)
+    end)
+    if ok and body ~= nil and body ~= "" then return body end
+    ok, body = pcall(function()
+        luanet.load_assembly("System.Diagnostics.Process")
+        local encoding = luanet.import_type("System.Text.Encoding")
+        local script = "[Console]::OutputEncoding=[Text.Encoding]::UTF8; "
+            .. "(Invoke-WebRequest -UseBasicParsing -TimeoutSec 15 -Uri '" .. url .. "').Content"
+        local b64 = luanet.import_type("System.Convert").ToBase64String(encoding.Unicode:GetBytes(script))
+        local psi = luanet.import_type("System.Diagnostics.ProcessStartInfo")()
+        psi.FileName = "powershell.exe"
+        psi.Arguments = "-NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand " .. b64
+        psi.CreateNoWindow = true
+        psi.UseShellExecute = false
+        psi.RedirectStandardOutput = true
+        psi.StandardOutputEncoding = encoding.UTF8
+        local p = luanet.import_type("System.Diagnostics.Process").Start(psi)
+        local out = p.StandardOutput:ReadToEnd()
+        p:WaitForExit(20000)
+        return tostring(out)
+    end)
+    if ok and body ~= nil and body ~= "" then return body end
+    return nil
+end
+
+-- 查 Universalis：資料中心內這張地圖最便宜的上架（只算單張、不超過 MaxMapPrice、不在 excluded 裡的伺服器）。
+-- 回傳 { world = 伺服器ID, price = 單價 }；查不到回 nil。Universalis 的資料是玩家上傳的，可能有幾小時延遲
+function Api.CheapestWorld(itemId, excluded)
+    local dc = luanet.import_type("System.Uri").EscapeDataString(Cfg.DataCenter)
+    local url = string.format(
+        "https://universalis.app/api/v2/%s/%d?listings=50&entries=0&fields=listings.worldID%%2Clistings.pricePerUnit%%2Clistings.quantity",
+        dc, itemId)
+    local body = Api.HttpGet(url)
+    if body == nil then return nil end
+    local best = nil
+    for obj in body:gmatch("{[^{}]*}") do
+        local price = tonumber(obj:match('"pricePerUnit":(%d+)'))
+        local qty = tonumber(obj:match('"quantity":(%d+)'))
+        local world = tonumber(obj:match('"worldID":(%d+)'))
+        if price and qty == 1 and world and not excluded[world] and price <= Cfg.MaxMapPrice then
+            if best == nil or price < best.price then best = { world = world, price = price } end
+        end
+    end
+    return best
+end
+
 -- 物品名稱（客戶端語系），用來在市場板搜尋，避免手填名稱打錯而搜到別張圖
 function Api.ItemName(itemId)
     local ok, name = pcall(function() return tostring(Excel.GetRow("Item", itemId).Name) end)
@@ -344,7 +421,8 @@ end
 
 -- 解除目前的選取，讓 Wrath 自動選怪
 function Api.ClearTarget()
-    local ok = pcall(function() Svc.Targets.Target = nil end)
+    local ok = pcall(function() Entity.Player:ClearTarget() end)
+    if not ok then ok = pcall(function() Svc.Targets.Target = nil end) end
     if not ok then yield("/send ESCAPE") end
 end
 
@@ -600,12 +678,6 @@ local function ApproachAndInteract(name)
     return true
 end
 
--- 地圖是獨特物品：未解讀的最多只能持有 1 張（已解讀的算不同物品，可以另外帶 1 張）。
--- 所以每次只買 1 張，身上沒有未解讀的圖才需要買
-local function MapsToBuy()
-    return Api.ItemCount(Cfg.MapItemId) == 0 and 1 or 0
-end
-
 local MARKET_ADDONS = { "ItemHistory", "ItemSearchResult", "ItemSearch" }
 
 local function MarketOpen()
@@ -691,10 +763,27 @@ function Handlers.CHECK_MAP()
         Log("已達 MaxMaps")
         return "END"
     end
-    -- 補圖：目標是 1 張已解讀 + 1 張未解讀。順序：買 1 張 → 關市場板 → 解讀 → 再買 1 張 → 關市場板 → 出發
-    -- 買不到時本輪不再嘗試，用身上的圖繼續
-    if Cfg.AutoBuy and not State.buyBlocked and MapsToBuy() > 0 then
-        return "MB_TRAVEL"
+    -- 一輪 = 買齊 1 張已解讀 + 1 張未解讀，兩張都挖完（身上完全沒圖）才開始下一輪。
+    -- 每輪開始：CrossWorld 時先查最便宜的伺服器並傳送過去（PICK_WORLD → WORLD_TRAVEL），
+    -- 再依序：買 1 張 → 關市場板 → 解讀 → 再買 1 張 → 關市場板 → 出發挖寶。買不到時本輪不再嘗試，用身上的圖繼續
+    local hasDeciphered = Api.HasDecipheredMap()
+    local hasUndeciphered = Api.ItemCount(Cfg.MapItemId) > 0
+    if Cfg.AutoBuy and not State.buyBlocked then
+        if not hasDeciphered and not hasUndeciphered and not State.roundBuying then
+            State.roundBuying = true
+            State.worldChosen = false
+            State.badWorlds = {}
+        end
+        if State.roundBuying then
+            if Cfg.CrossWorld and not State.worldChosen then return "PICK_WORLD" end
+            if not hasUndeciphered then return "MB_TRAVEL" end
+            if not hasDeciphered then
+                State.retries = 0
+                return "DECIPHER"
+            end
+            State.roundBuying = false
+            Log("本輪買齊（1 張已解讀 + 1 張未解讀），出發挖寶")
+        end
     end
     if Api.HasDecipheredMap() then return "LOCATE" end
     if Api.ItemCount(Cfg.MapItemId) > 0 then
@@ -905,6 +994,39 @@ function Handlers.DEAD()
     if TimedOut("DEAD") then return "ERROR" end
 end
 
+---------------------------------------------------------------- 跨伺服器（每輪開始時）
+
+-- 查 Universalis 選最便宜的伺服器；已經在那裡就直接買，查不到就留在目前伺服器
+function Handlers.PICK_WORLD()
+    State.worldChosen = true
+    local best = Api.CheapestWorld(Cfg.MapItemId, State.badWorlds or {})
+    if best == nil then
+        Log("Universalis 查不到 MaxMapPrice 以內的單張上架，留在目前伺服器買")
+        return "CHECK_MAP"
+    end
+    local name = Api.WorldName(best.world) or tostring(best.world)
+    Log(string.format("目前最便宜：%s，%d gil（Universalis）", name, best.price))
+    if best.world == Api.CurrentWorldId() then return "CHECK_MAP" end
+    State.targetWorld, State.targetWorldName = best.world, name
+    return "WORLD_TRAVEL"
+end
+
+-- 用 Lifestream 傳送到目標伺服器，等到達且角色可操作
+function Handlers.WORLD_TRAVEL()
+    if Api.CurrentWorldId() == State.targetWorld and Api.PlayerReady() and not Api.LifestreamBusy() then
+        Log("已到達 " .. State.targetWorldName)
+        State.worldTrips = (State.worldTrips or 0) + 1
+        return "CHECK_MAP"
+    end
+    if not State.sent and Api.PlayerReady() and not Api.LifestreamBusy() then
+        Api.NavStop()
+        Log("傳送到 " .. State.targetWorldName)
+        Api.Teleport(State.targetWorldName)
+        State.sent = true
+    end
+    if TimedOut("WORLD_TRAVEL") then return "ERROR" end
+end
+
 ---------------------------------------------------------------- 買圖子流程（市場板）
 -- 【事前準備，必做】要買的地圖必須先在市場板手動加入「我的最愛」和「期望清單」，
 -- 否則搜尋後點不開上架清單（ItemSearchResult），買圖會卡在 MB_SEARCH。
@@ -1052,7 +1174,19 @@ end
 -- 買不到（沒貨、太貴、gil 不足）：身上還有可用的圖就先去挖，否則結束
 function Handlers.MB_FAIL()
     CloseMarket()
+    -- 跨伺服器時：這個伺服器買不到（Universalis 資料過期、被買走），排除後換下一個最便宜的伺服器
+    local here = Api.CurrentWorldId()
+    if Cfg.CrossWorld and State.roundBuying and here ~= nil then
+        State.badWorlds = State.badWorlds or {}
+        if not State.badWorlds[here] then
+            State.badWorlds[here] = true
+            State.worldChosen = false
+            Log("這個伺服器買不到，改找下一個最便宜的伺服器")
+            return "CHECK_MAP"
+        end
+    end
     State.buyBlocked = true
+    State.roundBuying = false
     if Api.HasDecipheredMap() or Api.ItemCount(Cfg.MapItemId) > 0 then return "CHECK_MAP" end
     return "END"
 end
@@ -1152,8 +1286,8 @@ end
 function Handlers.END()
     StopAutomation()
     local stages = #State.stageLog > 0 and table.concat(State.stageLog, ",") or "無"
-    yield(string.format("/echo [G15] 結束：完成 %d 張，寶物庫 %d 次（到達關數 %s），錯誤 %d 次，買圖 %d 張共 %d gil",
-        State.mapsDone, State.dungeonRuns, stages, State.errorCount, State.mapsBought or 0, State.gilSpent or 0))
+    yield(string.format("/echo [G15] 結束：完成 %d 張，寶物庫 %d 次（到達關數 %s），錯誤 %d 次，買圖 %d 張共 %d gil，換伺服器 %d 次",
+        State.mapsDone, State.dungeonRuns, stages, State.errorCount, State.mapsBought or 0, State.gilSpent or 0, State.worldTrips or 0))
     return nil
 end
 
@@ -1187,7 +1321,7 @@ while true do
     -- 讀取中保護：只等待（DUNGEON_INIT / TRAVEL / ENTER_DUNGEON 自己處理讀取）
     local waitsOnLoading = State.current == "DUNGEON_INIT" or State.current == "TRAVEL"
         or State.current == "ENTER_DUNGEON" or State.current == "DUNGEON_EXIT"
-        or State.current == "MB_TRAVEL"
+        or State.current == "MB_TRAVEL" or State.current == "WORLD_TRAVEL"
     if Api.Condition(Cond.betweenAreas) and not waitsOnLoading then
         yield("/wait 0.5")
     else

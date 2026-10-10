@@ -100,17 +100,17 @@ configs:
     default: 3
     description: 連續錯誤幾次後停止腳本
   ChestName:
-    default: ""
-    description: 野外寶箱物件名稱（待填）
+    default: "寶箱"
+    description: 野外寶箱物件名稱（繁中客戶端）
   DungeonChestName:
-    default: ""
+    default: "寶箱"
     description: 寶物庫寶箱物件名稱（空白 = 同 ChestName）
   DoorName:
     default: ""
     description: 寶物庫門的物件名稱（待填，兩扇門通常同名）
   PortalName:
-    default: ""
-    description: 傳送門物件名稱（待填）
+    default: "傳送魔紋"
+    description: 傳送門物件名稱（繁中客戶端）
   AetheryteUrqopacha:
     default: ""
     description: Urqopacha 的以太之光名稱（留空 = 自動從遊戲資料取）
@@ -299,9 +299,34 @@ function Api.FlagPos()
     return Instances.Map.Flag.Vector3
 end
 
-function Api.GetEntity(name)
+-- 名稱相符且可選取的最近物件（Dalamud 物件）。Entity.GetEntityByName 只回傳第一個同名物件、
+-- 不管能不能選取，開過的寶箱還留在原地時會一直抓到它；有多個寶箱時也只看得到一個
+function Api.NearestTargetable(name)
     if name == nil or name == "" then return nil end
-    return Entity.GetEntityByName(name)
+    local ok, obj = pcall(function()
+        local me = Api.PlayerPos()
+        local objs = Svc.Objects
+        local best, bestDist = nil, math.huge
+        for i = 0, objs.Length - 1 do
+            local o = objs[i]
+            if o ~= nil and o.IsTargetable and o.Name.TextValue == name then
+                local dx, dy, dz = o.Position.X - me.X, o.Position.Y - me.Y, o.Position.Z - me.Z
+                local d = dx * dx + dy * dy + dz * dz
+                if d < bestDist then best, bestDist = o, d end
+            end
+        end
+        return best
+    end)
+    if ok then return obj end
+    -- 列舉失敗時退回 SND 的 GetEntityByName，只接受可選取的
+    local e = Entity.GetEntityByName(name)
+    if e ~= nil and e.IsTargetable then return e end
+    return nil
+end
+
+-- 場上還有沒有可互動的這種物件
+function Api.GetEntity(name)
+    return Api.NearestTargetable(name)
 end
 
 -- TODO 待確認：列舉同名物件的方式（門有兩扇且同名）
@@ -317,10 +342,12 @@ function Api.GetEntities(name)
     return list
 end
 
+-- 選取最近、可互動的同名物件
 function Api.Target(name)
-    local e = Api.GetEntity(name)
-    if e == nil then return false end
-    e:SetAsTarget()
+    local o = Api.NearestTargetable(name)
+    if o == nil then return false end
+    local ok = pcall(function() Svc.Targets.Target = o end)
+    if not ok then pcall(function() o:SetAsTarget() end) end
     return true
 end
 
@@ -1186,11 +1213,11 @@ function Handlers.FIELD_COMBAT()
     return "LOOT"
 end
 
--- 領獎：寶箱還在就互動領獎；寶箱消失（或一直不消失但傳送魔紋已出現）就看有沒有傳送魔紋
+-- 領獎：可能有多個寶箱，還有可互動的寶箱就一個一個開，全部開完才看有沒有傳送魔紋
 function Handlers.LOOT()
     local chest = Api.GetEntity(Cfg.ChestName)
     local portal = Api.GetEntity(Cfg.PortalName)
-    if chest == nil or (portal ~= nil and Elapsed() > 5) then
+    if chest == nil then
         State.mapsDone = State.mapsDone + 1
         State.errors = 0
         Log("完成第 " .. State.mapsDone .. " 張")

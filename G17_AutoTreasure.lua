@@ -554,6 +554,8 @@ end
 
 -- 選取最近的敵人（SND 內建 /targetenemy：最近、可選取、還活著的敵對目標），只選一次不鎖定
 function Api.TargetNearestEnemy()
+    Api.ClearTarget()   -- 先解除舊選取（例如召喚魔法陣、寶箱），選不到敵人時才不會誤判成已選到
+    yield("/wait 0.1")
     yield("/targetenemy")
     yield("/wait 0.1")
     return Entity.Target ~= nil
@@ -1609,17 +1611,29 @@ function Handlers.DUNGEON_COMBAT()
         return "DUNGEON_EXIT"
     end
     if not InDuty() then LeaveCombat(); return "DUNGEON_EXIT" end
+    -- 一進入就選最近的敵人：怪物剛出現時可能還不能選，每秒重試、最多 5 秒；選到後交給 Wrath，不保持鎖定
+    if not State.combatTargeted then
+        if Elapsed() - (State.lastEnemyScan or -10) >= 1 then
+            State.lastEnemyScan = Elapsed()
+            if Api.TargetNearestEnemy() or Elapsed() > 5 then State.combatTargeted = true end
+        end
+        if not State.wrathOn then Api.WrathOn() end
+        return nil
+    end
     if Api.Condition(Cond.inCombat) then
+        State.lastInCombat = Elapsed()
         CombatTick()
         return nil
     end
+    -- 脫離戰鬥滿 3 秒才確認還有沒有敵人（戰鬥中不解除、不重選）
+    if Elapsed() - (State.lastInCombat or 0) < 3 then return nil end
     if Api.AnyEnemyLeft(50) then
-        CombatTick()
+        State.lastInCombat = Elapsed()
+        if not State.wrathOn then Api.WrathOn() end
         return nil
     end
     LeaveCombat()
     Api.ClearTarget()
-    yield("/wait 3")
     return "DUNGEON_LOOT"
 end
 
@@ -1744,7 +1758,7 @@ local function Transition(next)
     State.lastPos, State.rePathed = nil, false
     State.sent, State.lastClick, State.travelPhase, State.decipherAt = false, nil, nil, nil
     State.cityTeleportSent, State.walkStarted, State.walkedToCrystal = false, false, false
-    State.combatTargeted, State.lastEnemyScan = false, nil
+    State.combatTargeted, State.lastEnemyScan, State.lastInCombat = false, nil, nil
     State.favoritesTried = false
     State.searchTries, State.lastSearch, State.manualPrompted = 0, nil, false
 end

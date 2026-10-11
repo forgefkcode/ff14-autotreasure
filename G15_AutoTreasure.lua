@@ -969,27 +969,26 @@ local function MaybeDrinkPotion()
         end
         return
     end
-    -- 直接呼叫遊戲的使用道具（ActionType.Item，數字代號 2；HQ 的 ID 要加 1000000）。
-    -- 不用 /item：在 Lua 腳本裡它會被當成遊戲聊天指令送出，繁中版沒有這個指令。
-    -- 依序試三種寫法，喝完用背包數量確認有沒有成功
+    -- 直接呼叫遊戲的使用道具：Actions.ExecuteAction(物品 ID, ActionType.Item)，HQ 的 ID 要加 1000000。
+    -- 只能傳 SND 提供的列舉值 ActionType.Item：傳數字或字串給列舉參數會在 Lua 外丟出 .NET 例外，
+    -- pcall 攔不到，SND 會顯示 Unknown error 並直接停掉腳本。
+    -- 不用 /item：在 Lua 腳本裡它會被當成遊戲聊天指令送出，繁中版沒有這個指令
+    if ActionType == nil or ActionType.Item == nil then
+        if not State.potionWarned then
+            Log("讀不到 ActionType.Item，無法喝藥")
+            State.potionWarned = true
+        end
+        return
+    end
     local actionId = hq and (id + 1000000) or id
     local before = Inventory.GetItemCount(id) + Inventory.GetHqItemCount(id)
-    local errors = {}
-    for _, call in ipairs({
-        function() Actions.ExecuteAction(actionId, 2) end,
-        function() Actions.ExecuteAction(actionId, ActionType.Item) end,
-        function() Actions.ExecuteAction(actionId, "Item") end,
-    }) do
-        local ok, err = pcall(call)
-        if ok then break end
-        table.insert(errors, tostring(err))
-    end
+    local ok, err = pcall(function() Actions.ExecuteAction(actionId, ActionType.Item) end)
     yield("/wait 1.5")
     local after = Inventory.GetItemCount(id) + Inventory.GetHqItemCount(id)
     if after < before then
         Log("喝藥：" .. Cfg.PotionItemName .. (hq and "（HQ）" or ""))
     else
-        Log("喝藥失敗（藥水數量沒有減少）" .. (#errors > 0 and ("：" .. table.concat(errors, "；")) or ""))
+        Log("喝藥失敗（藥水數量沒有減少）" .. (ok and "" or ("：" .. tostring(err))))
     end
 end
 

@@ -1,7 +1,7 @@
 --[=====[
 [[SND Metadata]]
 author: forgefk
-version: 0.1.0
+version: 0.2.0
 description: 喝藥測試（與正式腳本相同的做法）。在背包放好藥水後執行，把聊天框的 [PotionTest] 訊息貼回來。會實際喝掉一瓶。
 configs:
   PotionItemName:
@@ -48,29 +48,26 @@ end
 local nq, hq = Counts()
 Echo(string.format("1. 找到了：物品 ID %d，NQ %d 瓶、HQ %d 瓶（%s）", foundId, nq, hq, hasHq and "會用 HQ" or "會用 NQ"))
 
--- 2. 遊戲回報能不能用（0 = 可用；2 = 道具類型；HQ 的 ID 加 1000000）
-local actionId = hasHq and (foundId + 1000000) or foundId
-local sok, status = pcall(function() return Actions.GetActionStatus(2, actionId) end)
-Echo("2. 使用狀態（0 = 可用）：" .. (sok and tostring(status) or ("查詢失敗：" .. tostring(status))))
-Echo("   ActionType 這個名稱" .. (ActionType ~= nil and "存在" or "不存在（nil）"))
-
--- 3. 依序試三種寫法，喝到就停
-local methods = {
-    { "數字 2", function() Actions.ExecuteAction(actionId, 2) end },
-    { "ActionType.Item", function() Actions.ExecuteAction(actionId, ActionType.Item) end },
-    { "文字 \"Item\"", function() Actions.ExecuteAction(actionId, "Item") end },
-}
-local total = nq + hq
-for i, m in ipairs(methods) do
-    local cok, cerr = pcall(m[2])
-    yield("/wait 2")
-    local n2, h2 = Counts()
-    local after = n2 + h2
-    if after < total then
-        Echo(string.format("3-%d. 「%s」成功：藥水 %d → %d 瓶", i, m[1], total, after))
-        Echo("測試結束：這種寫法可以用")
-        return
-    end
-    Echo(string.format("3-%d. 「%s」沒有喝到%s", i, m[1], cok and "（沒有錯誤訊息）" or ("：" .. tostring(cerr))))
+-- 2. 確認 SND 有提供 ActionType 列舉。只能傳 ActionType.Item：
+--    傳數字或字串給列舉參數會在 Lua 外丟出例外，pcall 攔不到，SND 會直接停掉腳本（v0.1 就是死在這裡）
+if ActionType == nil or ActionType.Item == nil then
+    Echo("2. 讀不到 ActionType.Item，無法測試")
+    return
 end
-Echo("測試結束：三種寫法都沒有喝到。如果第 2 步狀態不是 0，可能是藥水冷卻中，等一下再試")
+Echo("2. ActionType.Item = " .. tostring(ActionType.Item))
+local actionId = hasHq and (foundId + 1000000) or foundId
+local status = Actions.GetActionStatus(ActionType.Item, actionId)
+Echo("   使用狀態（0 = 可用）：" .. tostring(status))
+
+-- 3. 使用，2 秒後看數量
+local total = nq + hq
+Actions.ExecuteAction(actionId, ActionType.Item)
+yield("/wait 2")
+local n2, h2 = Counts()
+local after = n2 + h2
+if after < total then
+    Echo(string.format("3. 成功：藥水 %d → %d 瓶", total, after))
+else
+    Echo("3. 沒有喝到（藥水數量沒變）。如果第 2 步狀態不是 0，可能是藥水冷卻中，等一下再試")
+end
+Echo("測試結束")

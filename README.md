@@ -2,15 +2,20 @@
 
 SND（Something Need Doing）Lua 腳本，戰士單人循環挖寶與寶物庫。
 
-| 腳本 | 地圖 | 藏寶地區 | 寶物庫 |
-| --- | --- | --- | --- |
-| [G17_AutoTreasure.lua](G17_AutoTreasure.lua) | 古舊的布拉克斯革地圖（Timeworn Br'aaxskin Map，8 人圖） | 黃金版 5 區（Living Memory 除外） | Cenote Ja Ja Gural（選門型，5 關） |
-| [G15_AutoTreasure.lua](G15_AutoTreasure.lua) | 古舊的蛇牛革地圖（Timeworn Ophiotauroskin Map） | 厄爾庇斯 | The Shifting Gymnasion Agonon（輪盤型，5 關） |
+| 腳本 | 狀態 | 地圖 | 藏寶地區 | 寶物庫 |
+| --- | --- | --- | --- | --- |
+| [G15_AutoTreasure.lua](G15_AutoTreasure.lua) | 實測調整中 | 陳舊的地圖G15（Timeworn Ophiotauroskin Map） | 厄爾庇斯 | The Shifting Gymnasion Agonon（輪盤型，5 關） |
+| [G17_AutoTreasure.lua](G17_AutoTreasure.lua) | 尚未實測，之後再調整 | 陳舊的地圖G17（Timeworn Br'aaxskin Map，8 人圖） | 黃金版 5 區（Living Memory 除外） | Cenote Ja Ja Gural（選門型，5 關） |
 
 直接下載（貼進 SND）：
 
-- G17：https://raw.githubusercontent.com/forgefkcode/ff14-g15-autotreasure/main/G17_AutoTreasure.lua
-- G15：https://raw.githubusercontent.com/forgefkcode/ff14-g15-autotreasure/main/G15_AutoTreasure.lua
+- G15：https://raw.githubusercontent.com/forgefkcode/ff14-autotreasure/main/G15_AutoTreasure.lua
+- G17：https://raw.githubusercontent.com/forgefkcode/ff14-autotreasure/main/G17_AutoTreasure.lua
+
+測試工具（`tools/`）：
+
+- 市場板搜尋診斷：https://raw.githubusercontent.com/forgefkcode/ff14-autotreasure/main/tools/MarketSearchTest.lua
+- 喝藥測試：https://raw.githubusercontent.com/forgefkcode/ff14-autotreasure/main/tools/PotionTest.lua
 
 ## 需求
 

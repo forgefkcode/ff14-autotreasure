@@ -754,6 +754,17 @@ function Api.FindInResults(name)
     return nil
 end
 
+-- 按「顯示我的最愛」（實測 ItemSearch 事件 12，後面的數字不影響），等清單出現（最多 3 秒）
+function Api.ShowFavorites()
+    yield("/callback ItemSearch true " .. Cfg.FavoritesCallback)
+    for _ = 1, 6 do
+        yield("/wait 0.5")
+        local ok, text = pcall(function() return tostring(Addons.GetAddon("ItemSearch"):GetNode(1, 139, 5, 13).Text) end)
+        if ok and text ~= nil and text ~= "" and text ~= "nil" then return true end
+    end
+    return false
+end
+
 -- 點清單第 index 項，打開上架清單
 function Api.MarketOpenResult(index)
     yield("/callback ItemSearch true 5 " .. index)
@@ -1564,11 +1575,9 @@ function Handlers.MB_OPEN()
     if TimedOut("MB_OPEN") then return "ERROR" end
 end
 
--- 找地圖的順序（每 4 秒一輪）：
---   1. 清單上已經有這張地圖（我的最愛分頁、或上次的搜尋結果）→ 依名稱找到那一項並點開
---   2. 有填 FavoritesCallback → 切到我的最愛分頁
---   3. 剪貼簿貼上搜尋（最多 SEARCH_AUTO_TRIES 次）
---   4. 都不行就請使用者手動切到我的最愛或搜尋，腳本繼續找、找到就自動點開
+-- 找地圖（每 4 秒一輪）：按「顯示我的最愛」→ 等清單出現 → 依名稱找到這張圖 → 點開上架清單（與 tools/MarketSearchTest.lua v1.0 實測成功的做法相同）。
+-- 連續 FAVORITES_TRIES 次都不行才改用剪貼簿搜尋（最多 SEARCH_AUTO_TRIES 次），最後請使用者手動
+local FAVORITES_TRIES = 3
 local SEARCH_AUTO_TRIES = 2
 
 function Handlers.MB_SEARCH()
@@ -1576,19 +1585,20 @@ function Handlers.MB_SEARCH()
     if Elapsed() - (State.lastSearch or -10) < 4 then return nil end
     State.lastSearch = Elapsed()
 
-    local idx = Api.FindInResults(Cfg.MapItemName)
-    if idx ~= nil then
-        Api.MarketOpenResult(idx)
-        return nil
-    end
-
-    if Cfg.FavoritesCallback ~= "" and not State.favoritesTried then
-        yield("/callback ItemSearch true " .. Cfg.FavoritesCallback)
-        State.favoritesTried = true
-        Log("切到我的最愛")
-        yield("/wait 1")
-        idx = Api.FindInResults(Cfg.MapItemName)
-        if idx ~= nil then Api.MarketOpenResult(idx) end
+    local favTries = State.favTries or 0
+    if Cfg.FavoritesCallback ~= "" and favTries < FAVORITES_TRIES then
+        State.favTries = favTries + 1
+        if Api.ShowFavorites() then
+            local idx = Api.FindInResults(Cfg.MapItemName)
+            if idx ~= nil then
+                Log("我的最愛：點開「" .. Cfg.MapItemName .. "」（第 " .. idx .. " 項）")
+                Api.MarketOpenResult(idx)
+                return nil
+            end
+            Log("我的最愛清單裡找不到「" .. Cfg.MapItemName .. "」（第 " .. State.favTries .. " 次）")
+        else
+            Log("按「顯示我的最愛」後清單沒有出現（第 " .. State.favTries .. " 次）")
+        end
         return nil
     end
 
@@ -1601,11 +1611,13 @@ function Handlers.MB_SEARCH()
             State.searchTries = tries + 1
             Log("自動搜尋第 " .. State.searchTries .. " 次（剪貼簿：" .. method .. "）")
         end
+        local idx = Api.FindInResults(Cfg.MapItemName)
+        if idx ~= nil then Api.MarketOpenResult(idx) end
         return nil
     end
 
     if not State.manualPrompted then
-        Log("找不到「" .. Cfg.MapItemName .. "」，請確認已加入市場板的我的最愛，並手動切到我的最愛分頁，腳本會接著自動購買")
+        Log("找不到「" .. Cfg.MapItemName .. "」，請確認已加入市場板的我的最愛，並手動點開它，腳本會接著自動購買")
         State.manualPrompted = true
     end
     if TimedOut("MB_SEARCH") then return "ERROR" end
@@ -1871,7 +1883,7 @@ local function Transition(next)
     State.sent, State.lastClick, State.travelPhase, State.decipherAt = false, nil, nil, nil
     State.cityTeleportSent = false
     State.combatTargeted, State.lastEnemyScan, State.lastInCombat, State.enemySeen = false, nil, nil, false
-    State.favoritesTried = false
+    State.favTries = 0
     State.lastChestAt = nil
     State.spotLogged = nil
     State.searchTries, State.lastSearch, State.manualPrompted = 0, nil, false

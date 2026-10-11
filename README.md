@@ -5,11 +5,13 @@ SND（Something Need Doing）Lua 腳本，戰士單人循環挖寶與寶物庫�
 | 腳本 | 狀態 | 地圖 | 藏寶地區 | 寶物庫 |
 | --- | --- | --- | --- | --- |
 | [G15_AutoTreasure.lua](G15_AutoTreasure.lua) | 實測調整中 | 陳舊的地圖G15（Timeworn Ophiotauroskin Map） | 厄爾庇斯 | The Shifting Gymnasion Agonon（輪盤型，5 關） |
+| [G14_AutoTreasure.lua](G14_AutoTreasure.lua) | 新寫，尚未實測（由 G15 改寫） | 陳舊的地圖G14（Timeworn Kumbhiraskin Map） | 曉月版 5 區（迷津、薩維奈島、加雷馬、嘆息海、天外天垓） | 驚奇百寶城（The Excitatron 6000，選門型，5 層） |
 | [G17_AutoTreasure.lua](G17_AutoTreasure.lua) | 尚未實測，之後再調整 | 陳舊的地圖G17（Timeworn Br'aaxskin Map，8 人圖） | 黃金版 5 區（Living Memory 除外） | Cenote Ja Ja Gural（選門型，5 關） |
 
 直接下載（貼進 SND）：
 
 - G15：https://raw.githubusercontent.com/forgefkcode/ff14-autotreasure/main/G15_AutoTreasure.lua
+- G14：https://raw.githubusercontent.com/forgefkcode/ff14-autotreasure/main/G14_AutoTreasure.lua
 - G17：https://raw.githubusercontent.com/forgefkcode/ff14-autotreasure/main/G17_AutoTreasure.lua
 
 測試工具（`tools/`）：
@@ -44,6 +46,14 @@ G15 目前實測使用的組合（感謝兩位大神）：
 - 一輪 = 買齊 1 張已解讀 + 1 張未解讀，兩張都挖完、身上完全沒圖時才重新比價
 - Universalis 的價格是玩家上傳的，可能有延遲；到了之後實際價格超過 `MaxMapPrice` 或已被買走，會排除該伺服器、改去下一個最便宜的
 - 查不到價格（網路問題、沒有符合條件的上架）時，留在目前伺服器照常買
+
+## G14 寶物庫（驚奇百寶城）
+
+每一層：跑到寶箱 → 開寶箱打怪 → 開殘留寶箱、處理強欲陷阱 → 兩扇「寶物庫的門」選一扇 → 等開門動畫 → 走進門踩傳送法陣到下一層，共 5 層。
+
+- 出現「右側的門發光了！」或「左側的門發光了！」時只會剩一扇門可以互動，選那扇；沒有提示就等 `DoorHintWait` 秒後依 `DoorChoice` 隨機選
+- 門後的傳送法陣不能互動：有填 `PassageName` 就走到那個物件，沒有就穿過門再往前 `PassageDistance`；角色被傳送（位置瞬間跳動）就算到下一層
+- 強欲陷阱（大／小魔法球）依 `GambleMode` 處理：`Ignore`（預設，不互動）/ `Big` / `Small`
 
 ## 使用前準備
 

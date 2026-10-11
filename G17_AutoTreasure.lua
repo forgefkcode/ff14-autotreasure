@@ -645,8 +645,37 @@ function Api.TargetNearestEnemy(maxDistance)
     return Entity.Target ~= nil
 end
 
--- 選最近的敵人後施放起手技能（預設飛斧 46，射程 20）：Wrath 自動循環有時不會自己起手，用它帶動開打。
--- 用技能 ID 直接施放，不按鍵盤，不受熱鍵列配置影響；太遠就先往敵人走（最多 5 秒）
+-- 起手技能（預設飛斧 46）現在能不能放：不在互動 / 詠唱 / 騎乘中，且遊戲回報可用
+-- （Actions.GetActionStatus 回 0 = 可用；1 = 一般技能類型）。查不到狀態時只看角色狀態
+function Api.PullReady()
+    if Api.Condition(Cond.occupiedInEvent) or Api.Condition(Cond.casting) or Api.Condition(Cond.mounted) then
+        return false
+    end
+    local ok, status = pcall(function() return Actions.GetActionStatus(1, Cfg.PullActionId) end)
+    if ok and tonumber(status) ~= nil then return tonumber(status) == 0 end
+    return true
+end
+
+-- 施放起手技能：用遊戲原生的 /ac 技能名稱（等同玩家按巨集，對目前目標施放；名稱從遊戲資料取，自動是客戶端語言）。
+-- 現在不能放就回 false，由 CombatTick 在 5 秒內重試
+function Api.TryPull()
+    if Cfg.PullActionId == nil or Cfg.PullActionId <= 0 then return true end
+    if Entity.Target == nil or not Api.PullReady() then return false end
+    local ok, name = pcall(function() return tostring(Excel.GetRow("Action", Cfg.PullActionId).Name) end)
+    local t = Entity.Target
+    local dist = (t ~= nil and t.DistanceTo ~= nil) and string.format("%.1f", t.DistanceTo) or "?"
+    if ok and name ~= nil and name ~= "" and name ~= "nil" then
+        Log("施放 " .. name .. "（距離 " .. dist .. "）")
+        yield('/ac "' .. name .. '"')
+    else
+        Log("施放技能 " .. Cfg.PullActionId .. "（距離 " .. dist .. "）")
+        pcall(function() Actions.ExecuteAction(Cfg.PullActionId, 1) end)
+    end
+    return true
+end
+
+-- 選最近的敵人並施放起手技能帶動 Wrath 開打；太遠先往敵人走（最多 5 秒）。
+-- 當下不能放（剛開完寶箱還在互動、公共冷卻中）就記著，CombatTick 會在 5 秒內重試
 function Api.EngageNearestEnemy(maxDistance)
     if not Api.TargetNearestEnemy(maxDistance) then return false end
     if Cfg.PullActionId == nil or Cfg.PullActionId <= 0 then return true end
@@ -660,17 +689,10 @@ function Api.EngageNearestEnemy(maxDistance)
         end
         Api.NavStop()
     end
-    -- 用遊戲原生的 /ac 技能名稱（等同玩家按巨集，對目前目標施放）；技能名稱從遊戲資料取，自動是客戶端語言。
-    -- 取不到名稱才退回 Actions.ExecuteAction
-    local ok, name = pcall(function() return tostring(Excel.GetRow("Action", Cfg.PullActionId).Name) end)
-    t = Entity.Target
-    local dist = (t ~= nil and t.DistanceTo ~= nil) and string.format("%.1f", t.DistanceTo) or "?"
-    if ok and name ~= nil and name ~= "" and name ~= "nil" then
-        Log("施放 " .. name .. "（距離 " .. dist .. "）")
-        yield('/ac "' .. name .. '"')
+    if Api.TryPull() then
+        State.pullUntil = nil
     else
-        Log("施放技能 " .. Cfg.PullActionId .. "（距離 " .. dist .. "）")
-        pcall(function() Actions.ExecuteAction(Cfg.PullActionId, ActionType.Action) end)
+        State.pullUntil = os.clock() + 5
     end
     return true
 end
@@ -1117,6 +1139,10 @@ local function CombatTick()
     if not State.wrathOn then
         Api.NavStop()
         Api.WrathOn()
+    end
+    -- 起手技能剛才沒放出去：5 秒內每輪重試
+    if State.pullUntil ~= nil then
+        if os.clock() > State.pullUntil or Api.TryPull() then State.pullUntil = nil end
     end
     MaybeDrinkPotion()
 end
@@ -2018,6 +2044,7 @@ local function Transition(next)
     State.sent, State.lastClick, State.travelPhase, State.decipherAt = false, nil, nil, nil
     State.cityTeleportSent = false
     State.combatTargeted, State.lastEnemyScan, State.lastInCombat, State.enemySeen = false, nil, nil, false
+    State.pullUntil = nil
     State.favoritesTried = false
     State.lastChestAt = nil
     State.spotLogged = nil

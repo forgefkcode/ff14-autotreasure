@@ -14,7 +14,7 @@ SND（Something Need Doing）Lua 腳本，戰士單人循環挖寶與寶物庫�
 
 ## 需求
 
-- SND（Lua 引擎）、vnavmesh（移動）、Lifestream（傳送）、Wrath Combo、BossMod Reborn（只開閃避）
+- SND（Lua 引擎）、vnavmesh（移動）、Lifestream（傳送）、Wrath Combo、BossMod 或 BossMod Reborn（擇一，只開閃避；`BossModPlugin` 預設自動偵測）
 - 建議：[XIV 藏寶圖工具小幫手](https://github.com/cycleapple/xiv-party-treasure-helper)（XivTreasureParty），開啟「解碼後自動開地圖打旗標」，解讀後自動在藏寶點插旗；沒裝就要手動插旗
 
 ## 自動買圖

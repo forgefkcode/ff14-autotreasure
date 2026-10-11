@@ -6,7 +6,6 @@ description: FF14 G15 自動挖寶（古舊的蛇牛革地圖）+ 寶物庫 The 
 plugin_dependencies:
 - vnavmesh
 - WrathCombo
-- BossModReborn
 - Lifestream
 configs:
   MapItemId:
@@ -21,9 +20,12 @@ configs:
   AutoBuy:
     default: true
     description: 圖不夠時自動到市場板買圖（維持身上 1 張已解讀 + 1 張未解讀）。事前記得在市場板把要買的地圖加入「我的最愛」
-  BmrPreset:
+  BossModPlugin:
+    default: "Auto"
+    description: 閃避用的插件：Auto（有 BossMod 用 BossMod，否則用 BossMod Reborn）/ BossMod / BossModReborn
+  BossModPreset:
     default: "VBM Default"
-    description: 啟動時套用的 BossMod Reborn 自動預設（/bmr ar set）；名稱打錯 BMR 會強制停用，留空 = 不切換
+    description: 啟動時套用的自動預設（/vbm 或 /bmr ar set）；BMR 遇到打錯的名稱會強制停用，留空 = 不切換
   CrossWorld:
     default: true
     description: 每輪開始前查 Universalis，傳送到資料中心內地圖最便宜的伺服器買圖並挖寶（需要 Lifestream）
@@ -183,7 +185,8 @@ local Cfg = {
     DecipheredItemId = Config.Get("DecipheredItemId"),
     FlagWait   = Config.Get("FlagWait"),
     AutoBuy          = Config.Get("AutoBuy"),
-    BmrPreset        = Config.Get("BmrPreset"),
+    BossModPlugin    = Config.Get("BossModPlugin"),
+    BossModPreset    = Config.Get("BossModPreset"),
     CrossWorld       = Config.Get("CrossWorld"),
     DataCenter       = Config.Get("DataCenter"),
     MaxMapPrice      = Config.Get("MaxMapPrice"),
@@ -265,7 +268,7 @@ function Api.Condition(id)
 end
 
 -- 直接查 Dalamud 已載入的插件，用 InternalName 比對。
--- 不用 IPC.IsInstalled：它只認 SND 內建的 IPC 包裝（沒有 BossModReborn），
+-- 不用 IPC.IsInstalled：它只認 SND 內建的 IPC 包裝（例如沒有 BossModReborn），
 -- 而且比對的是顯示名稱（Wrath 顯示為 "Wrath Combo"），兩個都會誤判成沒裝
 function Api.PluginInstalled(internalName)
     for plugin in luanet.each(Svc.PluginInterface.InstalledPlugins) do
@@ -949,7 +952,7 @@ local Handlers = {}
 
 function Handlers.INIT()
     local missing = {}
-    for _, p in ipairs({ "vnavmesh", "WrathCombo", "BossModReborn", "Lifestream" }) do
+    for _, p in ipairs({ "vnavmesh", "WrathCombo", "Lifestream" }) do
         if not Api.PluginInstalled(p) then table.insert(missing, p) end
     end
     if #missing > 0 then
@@ -968,9 +971,23 @@ function Handlers.INIT()
             return "END"
         end
     end
-    if Cfg.BmrPreset ~= nil and Cfg.BmrPreset ~= "" then
-        yield("/bmr ar set " .. Cfg.BmrPreset)
-        Log("BossMod Reborn 預設：" .. Cfg.BmrPreset)
+    -- 閃避插件：BossMod（/vbm）或 BossMod Reborn（/bmr），兩個指令格式相同
+    local hasVbm, hasBmr = Api.PluginInstalled("BossMod"), Api.PluginInstalled("BossModReborn")
+    local choice = Cfg.BossModPlugin or "Auto"
+    local bossCmd = nil
+    if choice == "BossMod" or (choice == "Auto" and hasVbm) then
+        bossCmd = hasVbm and "/vbm" or nil
+    elseif choice == "BossModReborn" or (choice == "Auto" and hasBmr) then
+        bossCmd = hasBmr and "/bmr" or nil
+    end
+    if bossCmd == nil then
+        LogError("沒有偵測到啟用中的 BossMod / BossMod Reborn（設定：" .. choice .. "）")
+        return "END"
+    end
+    if hasVbm and hasBmr then Log("提醒：BossMod 和 BossMod Reborn 同時啟用，兩個會搶著閃避，建議只開一個") end
+    if Cfg.BossModPreset ~= nil and Cfg.BossModPreset ~= "" then
+        yield(bossCmd .. " ar set " .. Cfg.BossModPreset)
+        Log((bossCmd == "/vbm" and "BossMod" or "BossMod Reborn") .. " 預設：" .. Cfg.BossModPreset)
     end
     if Cfg.MapItemId == 0 then
         LogError("未設定 MapItemId")

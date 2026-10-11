@@ -1037,7 +1037,7 @@ local function CloseMarket()
 end
 
 -- 喝藥：HP 低於 PotionHpPercent 且距離上次超過 PotionCooldown 秒時，從背包找藥水直接使用（有 HQ 優先用 HQ）。
--- 不用 /item：它只用 NQ、每次都要掃整張物品表，找不到時還會讓 SND 報錯
+-- 先掃背包確認有這瓶藥，再用 SND 的 /item 使用（有 HQ 加 <hq>）
 local function MaybeDrinkPotion()
     if Cfg.PotionHpPercent <= 0 or Cfg.PotionItemName == "" then return end
     if Api.HpPercent() >= Cfg.PotionHpPercent then return end
@@ -1051,9 +1051,15 @@ local function MaybeDrinkPotion()
         end
         return
     end
-    local actionId = hq and (id + 1000000) or id
-    local ok = pcall(function() Actions.ExecuteAction(actionId, ActionType.Item) end)
-    Log(ok and ("喝藥：" .. Cfg.PotionItemName .. (hq and "（HQ）" or "")) or "喝藥失敗")
+    -- 用 SND 的 /item（底層是遊戲的使用道具，等同在背包點藥水）；有 HQ 加 <hq>。
+    -- 不用 Actions.ExecuteAction：在實測中沒有作用（飛斧也一樣）
+    local cmd = '/item "' .. Cfg.PotionItemName .. '"' .. (hq and " <hq>" or "")
+    local ok, err = pcall(function() yield(cmd) end)
+    if ok then
+        Log("喝藥：" .. Cfg.PotionItemName .. (hq and "（HQ）" or ""))
+    else
+        Log("喝藥失敗：" .. tostring(err))
+    end
 end
 
 -- 戰鬥中：解除對寶箱的選取（選著寶箱 Wrath 不會自動選怪），交給 Wrath 打；

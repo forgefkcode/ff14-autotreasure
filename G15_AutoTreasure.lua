@@ -618,7 +618,18 @@ function Api.EngageNearestEnemy(maxDistance)
         end
         Api.NavStop()
     end
-    pcall(function() Actions.ExecuteAction(Cfg.PullActionId, ActionType.Action) end)
+    -- 用遊戲原生的 /ac 技能名稱（等同玩家按巨集，對目前目標施放）；技能名稱從遊戲資料取，自動是客戶端語言。
+    -- 取不到名稱才退回 Actions.ExecuteAction
+    local ok, name = pcall(function() return tostring(Excel.GetRow("Action", Cfg.PullActionId).Name) end)
+    t = Entity.Target
+    local dist = (t ~= nil and t.DistanceTo ~= nil) and string.format("%.1f", t.DistanceTo) or "?"
+    if ok and name ~= nil and name ~= "" and name ~= "nil" then
+        Log("施放 " .. name .. "（距離 " .. dist .. "）")
+        yield('/ac "' .. name .. '"')
+    else
+        Log("施放技能 " .. Cfg.PullActionId .. "（距離 " .. dist .. "）")
+        pcall(function() Actions.ExecuteAction(Cfg.PullActionId, ActionType.Action) end)
+    end
     return true
 end
 

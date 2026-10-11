@@ -5,7 +5,6 @@ version: 0.1.0
 description: FF14 G15 自動挖寶（古舊的蛇牛革地圖）+ 寶物庫 The Shifting Gymnasion Agonon。戰士單刷，依「FF14 G15 自動挖寶 SND 架構規格」實作。
 plugin_dependencies:
 - vnavmesh
-- WrathCombo
 - Lifestream
 configs:
   MapItemId:
@@ -20,12 +19,12 @@ configs:
   AutoBuy:
     default: true
     description: 圖不夠時自動到市場板買圖（維持身上 1 張已解讀 + 1 張未解讀）。事前記得在市場板把要買的地圖加入「我的最愛」
+  RotationPlugin:
+    default: "Auto"
+    description: 自動輸出插件：Auto（有 RotationSolver Reborn 用 RSR，否則用 Wrath Combo）/ RotationSolver / WrathCombo
   BossModPlugin:
     default: "Auto"
-    description: 閃避用的插件：Auto（有 BossMod 用 BossMod，否則用 BossMod Reborn）/ BossMod / BossModReborn
-  BossModPreset:
-    default: "VBM Default"
-    description: 只用於 BossMod Reborn：啟動時 /bmr ar set 這個預設（打錯名稱 BMR 會強制停用，留空 = 不切換）；BossMod 改用 AI 模式，跟著 Wrath 一起開關
+    description: 閃避插件：Auto（有 BossMod Reborn 用 BMR，否則用 BossMod）/ BossModReborn / BossMod。只開 AI 閃避，寶物庫戰鬥中才開
   CrossWorld:
     default: true
     description: 每輪開始前查 Universalis，傳送到資料中心內地圖最便宜的伺服器買圖並挖寶（需要 Lifestream）
@@ -190,8 +189,8 @@ local Cfg = {
     DecipheredItemId = Config.Get("DecipheredItemId"),
     FlagWait   = Config.Get("FlagWait"),
     AutoBuy          = Config.Get("AutoBuy"),
+    RotationPlugin   = Config.Get("RotationPlugin"),
     BossModPlugin    = Config.Get("BossModPlugin"),
-    BossModPreset    = Config.Get("BossModPreset"),
     CrossWorld       = Config.Get("CrossWorld"),
     DataCenter       = Config.Get("DataCenter"),
     MaxMapPrice      = Config.Get("MaxMapPrice"),
@@ -657,26 +656,34 @@ function Api.LifestreamBusy()
     return ok and busy == true
 end
 
--- 開關 Wrath 時同步記錄狀態，CombatTick / TRAVEL 依 State.wrathOn 判斷要不要再開。
--- 用 BossMod（/vbm）時，AI 模式只在寶物庫內跟著 Wrath 一起開關（野外不開）
+-- 開關自動輸出（RSR 或 Wrath，依 State.rotation）時同步記錄狀態，CombatTick / TRAVEL 依 State.wrathOn 判斷要不要再開。
+-- 閃避 AI（BMR：/bmrai，BossMod：/vbm ai）只在寶物庫內跟著一起開：野外開 AI 會跟「離寶箱太遠就走回去」互相拉扯
+local function BossAiCmd(on)
+    if State.bossCmd == "/bmr" then return on and "/bmrai on" or "/bmrai off" end
+    if State.bossCmd == "/vbm" then return on and "/vbm ai on" or "/vbm ai off" end
+    return nil
+end
+
 function Api.WrathOn()
-    yield("/wrath auto on")
-    -- BossMod AI 只在寶物庫內開：野外開 AI 會跟「離寶箱太遠就走回去」互相拉扯
-    if State.bossCmd == "/vbm" and Api.Territory() == VAULT_TERRITORY then
-        yield("/vbm ai on")
+    yield(State.rotation == "RotationSolver" and "/rotation Auto" or "/wrath auto on")
+    local aiCmd = BossAiCmd(true)
+    if aiCmd ~= nil and Api.Territory() == VAULT_TERRITORY then
+        yield(aiCmd)
         State.vbmAiOn = true
     end
     State.wrathOn = true
 end
 
 function Api.WrathOff()
-    yield("/wrath auto off")
+    yield(State.rotation == "RotationSolver" and "/rotation Off" or "/wrath auto off")
     if State.vbmAiOn then
-        yield("/vbm ai off")
+        local aiCmd = BossAiCmd(false)
+        if aiCmd ~= nil then yield(aiCmd) end
         State.vbmAiOn = false
     end
     State.wrathOn = false
 end
+
 
 -- 解讀視窗是 SelectIconString（標題「解讀」）。依名稱在清單裡找這張地圖的位置，
 -- 節點路徑取自社群腳本 Narrr13/snd OpenMap.lua。讀不到清單文字時退回第 1 項
@@ -1022,7 +1029,7 @@ local Handlers = {}
 
 function Handlers.INIT()
     local missing = {}
-    for _, p in ipairs({ "vnavmesh", "WrathCombo", "Lifestream" }) do
+    for _, p in ipairs({ "vnavmesh", "Lifestream" }) do
         if not Api.PluginInstalled(p) then table.insert(missing, p) end
     end
     if #missing > 0 then
@@ -1041,28 +1048,43 @@ function Handlers.INIT()
             return "END"
         end
     end
-    -- 閃避插件：BossMod（/vbm）或 BossMod Reborn（/bmr），兩個指令格式相同
+    -- 自動輸出插件：RotationSolver Reborn（/rotation Auto|Off）或 Wrath Combo（/wrath auto on|off）
+    local hasRsr, hasWrath = Api.PluginInstalled("RotationSolver"), Api.PluginInstalled("WrathCombo")
+    local rotChoice = Cfg.RotationPlugin or "Auto"
+    local rotation = nil
+    if rotChoice == "RotationSolver" or (rotChoice == "Auto" and hasRsr) then
+        rotation = hasRsr and "RotationSolver" or nil
+    elseif rotChoice == "WrathCombo" or (rotChoice == "Auto" and hasWrath) then
+        rotation = hasWrath and "WrathCombo" or nil
+    end
+    if rotation == nil then
+        LogError("沒有偵測到啟用中的 RotationSolver Reborn / Wrath Combo（設定：" .. rotChoice .. "）")
+        return "END"
+    end
+    if hasRsr and hasWrath then Log("提醒：RotationSolver 和 Wrath Combo 同時啟用，兩個會搶著放技能，建議只開一個") end
+    State.rotation = rotation
+
+    -- 閃避插件：BossMod Reborn（/bmrai on|off）或 BossMod（/vbm ai on|off），只用 AI 閃避、寶物庫戰鬥中才開
     local hasVbm, hasBmr = Api.PluginInstalled("BossMod"), Api.PluginInstalled("BossModReborn")
     local choice = Cfg.BossModPlugin or "Auto"
     local bossCmd = nil
-    if choice == "BossMod" or (choice == "Auto" and hasVbm) then
-        bossCmd = hasVbm and "/vbm" or nil
-    elseif choice == "BossModReborn" or (choice == "Auto" and hasBmr) then
+    if choice == "BossModReborn" or (choice == "Auto" and hasBmr) then
         bossCmd = hasBmr and "/bmr" or nil
+    elseif choice == "BossMod" or (choice == "Auto" and hasVbm) then
+        bossCmd = hasVbm and "/vbm" or nil
     end
     if bossCmd == nil then
-        LogError("沒有偵測到啟用中的 BossMod / BossMod Reborn（設定：" .. choice .. "）")
+        LogError("沒有偵測到啟用中的 BossMod Reborn / BossMod（設定：" .. choice .. "）")
         return "END"
     end
     if hasVbm and hasBmr then Log("提醒：BossMod 和 BossMod Reborn 同時啟用，兩個會搶著閃避，建議只開一個") end
     State.bossCmd = bossCmd
-    if bossCmd == "/vbm" then
-        -- BossMod（繁中版）沒有內建「VBM Default」預設，改用 AI 模式閃避，跟著 Wrath 一起開關
-        Log("BossMod AI 模式只在寶物庫內跟著 Wrath 一起開關，野外不開")
-    elseif Cfg.BossModPreset ~= nil and Cfg.BossModPreset ~= "" then
-        yield(bossCmd .. " ar set " .. Cfg.BossModPreset)
-        Log("BossMod Reborn 預設：" .. Cfg.BossModPreset)
+    if bossCmd == "/bmr" then
+        -- 清掉 BMR 的自動輸出預設，避免跟 RSR / Wrath 搶著放技能；BMR 只負責 AI 閃避
+        yield("/bmr ar clear")
     end
+    Log("輸出：" .. (rotation == "RotationSolver" and "RotationSolver Reborn" or "Wrath Combo")
+        .. "；閃避：" .. (bossCmd == "/bmr" and "BossMod Reborn" or "BossMod") .. " AI（只在寶物庫戰鬥中開）")
     if Cfg.MapItemId == 0 then
         LogError("未設定 MapItemId")
         return "END"
@@ -1262,7 +1284,7 @@ function Handlers.TRAVEL()
     if not State.wrathOn then
         Api.WrathOn()
         State.wrathOn = true
-        Log("已到藏寶地區，開啟 Wrath")
+        Log("已到藏寶地區，開啟自動輸出")
     end
 
     -- 到達判斷用藏寶點真正座標（對不到才用旗標）

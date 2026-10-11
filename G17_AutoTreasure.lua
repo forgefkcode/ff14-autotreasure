@@ -92,6 +92,9 @@ configs:
   EnemySearchRange:
     default: 100
     description: 寶物庫內找敵人的範圍（選最近的敵人、確認是否打完都用這個）
+  PullActionId:
+    default: 46
+    description: 選到最近的敵人後施放的起手技能 ID（46 = 飛斧，射程 20）；0 = 不施放
   PotionHpPercent:
     default: 40
     description: HP 低於此百分比時喝藥（0 = 不喝）
@@ -243,7 +246,7 @@ for _, k in ipairs({
     "MapItemId", "MaxRounds", "MaxMaps", "EnterDungeon", "DecipheredItemId", "FlagWait", "AutoBuy",
     "BossModPlugin", "BossModPreset", "CrossWorld", "DataCenter", "MaxMapPrice", "GilFloor", "MarketTerritoryId", "MarketAetheryte", "MarketX", "MarketY", "MarketZ",
     "FavoritesCallback", "MarketBoardName", "DoorChoice", "WalkRadius", "DigRadius", "FieldClearMessage", "LeashRadius", "PortalWait",
-    "RouletteWait", "EnemySearchRange", "PotionHpPercent", "PotionItemName", "PotionCooldown", "UseSprint", "MaxErrors", "ChestName", "DungeonChestName",
+    "RouletteWait", "EnemySearchRange", "PullActionId", "PotionHpPercent", "PotionItemName", "PotionCooldown", "UseSprint", "MaxErrors", "ChestName", "DungeonChestName",
     "DoorName", "PortalName", "AetheryteUrqopacha", "AetheryteKozamauka", "AetheryteYakTel",
     "AetheryteShaaloani", "AetheryteHeritageFound", "EchoLogs",
 }) do
@@ -640,10 +643,22 @@ function Api.TargetNearestEnemy(maxDistance)
     return Entity.Target ~= nil
 end
 
--- 選最近的敵人後按一下數字鍵 1：Wrath 自動循環有時不會自己起手，按一下帶動它開始
+-- 選最近的敵人後施放起手技能（預設飛斧 46，射程 20）：Wrath 自動循環有時不會自己起手，用它帶動開打。
+-- 用技能 ID 直接施放，不按鍵盤，不受熱鍵列配置影響；太遠就先往敵人走（最多 5 秒）
 function Api.EngageNearestEnemy(maxDistance)
     if not Api.TargetNearestEnemy(maxDistance) then return false end
-    yield("/send KEY_1")
+    if Cfg.PullActionId == nil or Cfg.PullActionId <= 0 then return true end
+    local t = Entity.Target
+    if t ~= nil and t.DistanceTo ~= nil and t.DistanceTo > 18 then
+        yield("/vnav movetarget")
+        for _ = 1, 10 do
+            yield("/wait 0.5")
+            t = Entity.Target
+            if t == nil or t.DistanceTo == nil or t.DistanceTo <= 18 then break end
+        end
+        Api.NavStop()
+    end
+    pcall(function() Actions.ExecuteAction(Cfg.PullActionId, ActionType.Action) end)
     return true
 end
 

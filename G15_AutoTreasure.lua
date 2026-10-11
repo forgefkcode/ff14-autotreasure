@@ -25,7 +25,7 @@ configs:
     description: 閃避用的插件：Auto（有 BossMod 用 BossMod，否則用 BossMod Reborn）/ BossMod / BossModReborn
   BossModPreset:
     default: "VBM Default"
-    description: 啟動時套用的自動預設（/vbm 或 /bmr ar set）；BMR 遇到打錯的名稱會強制停用，留空 = 不切換
+    description: 只用於 BossMod Reborn：啟動時 /bmr ar set 這個預設（打錯名稱 BMR 會強制停用，留空 = 不切換）；BossMod 一律改開 AI 模式（/vbm ai on）
   CrossWorld:
     default: true
     description: 每輪開始前查 Universalis，傳送到資料中心內地圖最便宜的伺服器買圖並挖寶（需要 Lifestream）
@@ -985,9 +985,14 @@ function Handlers.INIT()
         return "END"
     end
     if hasVbm and hasBmr then Log("提醒：BossMod 和 BossMod Reborn 同時啟用，兩個會搶著閃避，建議只開一個") end
-    if Cfg.BossModPreset ~= nil and Cfg.BossModPreset ~= "" then
+    if bossCmd == "/vbm" then
+        -- BossMod（繁中版）沒有內建「VBM Default」預設，直接開 AI 模式負責閃避；腳本結束時關掉
+        yield("/vbm ai on")
+        State.vbmAiOn = true
+        Log("BossMod AI 模式：開啟")
+    elseif Cfg.BossModPreset ~= nil and Cfg.BossModPreset ~= "" then
         yield(bossCmd .. " ar set " .. Cfg.BossModPreset)
-        Log((bossCmd == "/vbm" and "BossMod" or "BossMod Reborn") .. " 預設：" .. Cfg.BossModPreset)
+        Log("BossMod Reborn 預設：" .. Cfg.BossModPreset)
     end
     if Cfg.MapItemId == 0 then
         LogError("未設定 MapItemId")
@@ -1828,6 +1833,10 @@ end
 
 function Handlers.END()
     StopAutomation()
+    if State.vbmAiOn then
+        yield("/vbm ai off")
+        State.vbmAiOn = false
+    end
     local stages = #State.stageLog > 0 and table.concat(State.stageLog, ",") or "無"
     yield(string.format("/echo [G15] 結束：完成 %d 張，寶物庫 %d 次（到達關數 %s），錯誤 %d 次，買圖 %d 張共 %d gil，換伺服器 %d 次，完成 %d 輪",
         State.mapsDone, State.dungeonRuns, stages, State.errorCount, State.mapsBought or 0, State.gilSpent or 0, State.worldTrips or 0, State.roundsDone or 0))

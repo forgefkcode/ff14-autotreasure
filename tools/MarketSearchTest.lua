@@ -1,12 +1,12 @@
 --[=====[
 [[SND Metadata]]
 author: forgefk
-version: 0.8.0
-description: 測試市場板搜尋視窗 callback「12 1」～「12 6」，並實際點開地圖的上架清單、讀價格（與正式腳本相同的方法），但不購買。站在市場板旁執行，把聊天框的 [MBTest] 訊息貼回來。
+version: 0.9.0
+description: 測試市場板搜尋視窗 callback「13 1」～「13 6」（「12」會打開我的最愛），並實際點開地圖的上架清單、讀價格（與正式腳本相同的方法），但不購買。站在市場板旁執行，把聊天框的 [MBTest] 訊息貼回來。
 configs:
   ItemId:
-    default: 39591
-    description: 要找的物品 ID（39591 = G15，43557 = G17）
+    default: 43557
+    description: 要找的物品 ID（43557 = G17，39591 = G15）
 [[End Metadata]]
 --]=====]
 
@@ -92,7 +92,7 @@ end
 Echo("搜尋視窗已開，打開時清單：" .. ListSummary())
 
 for i = 1, 6 do
-    local c = "12 " .. i
+    local c = "13 " .. i
     yield("/callback ItemSearch true " .. c)
     yield("/wait 1")
     if Ready("ItemSearchResult") then CloseResult() end

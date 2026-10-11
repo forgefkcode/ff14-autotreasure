@@ -1,16 +1,16 @@
 --[=====[
 [[SND Metadata]]
 author: forgefk
-version: 0.9.0
-description: 測試市場板搜尋視窗 callback「13 1」～「13 6」（「12」會打開我的最愛），並實際點開地圖的上架清單、讀價格（與正式腳本相同的方法），但不購買。站在市場板旁執行，把聊天框的 [MBTest] 訊息貼回來。
-configs:
-  ItemId:
-    default: 43557
-    description: 要找的物品 ID（43557 = G17，39591 = G15）
+version: 1.0.0
+description: 測試從市場板「顯示我的最愛」清單分別點開 G15、G17 藏寶圖的上架清單並讀價格，但不購買。站在市場板旁執行，把聊天框的 [MBTest] 訊息貼回來。
 [[End Metadata]]
 --]=====]
 
 local function Echo(msg) yield("/echo [MBTest] " .. msg) end
+
+-- 「顯示我的最愛」按鈕：實測 ItemSearch 事件 12（後面的數字不影響）
+local FAVORITES = "12 6"
+local MAPS = { 39591, 43557 }   -- G15、G17
 
 local function Ready(name)
     local ok, r = pcall(function() return Addons.GetAddon(name).Ready end)
@@ -34,7 +34,7 @@ local function ListSummary()
     for i = 0, 5 do
         local t = ListText(i)
         if t == "" or t == "nil" then break end
-        table.insert(names, t)
+        table.insert(names, i .. ":" .. t)
     end
     if #names == 0 then return "（空）" end
     return table.concat(names, "、")
@@ -49,25 +49,32 @@ local function FindIndex(name)
     return nil
 end
 
+-- 關掉上架清單（退出），確認真的關掉才回傳 true
 local function CloseResult()
     for _ = 1, 10 do
-        if not Ready("ItemSearchResult") then return end
+        if not Ready("ItemSearchResult") then return true end
         yield("/callback ItemSearchResult true -1")
         yield("/wait 0.3")
     end
+    return not Ready("ItemSearchResult")
 end
 
 -- 讀上架清單第一筆的單價、數量（與正式腳本 Api.MarketFirstListing 相同）
 local function FirstListing()
-    local priceText = NodeText("ItemSearchResult", 1, 26, 4, 5)
-    local countText = NodeText("ItemSearchResult", 1, 26, 4, 6)
-    local price = tonumber((priceText:gsub("%D", "")))
-    local count = tonumber((countText:gsub("%D", "")))
-    return price, count, priceText, countText, NodeText("ItemSearchResult", 1, 5)
+    local pt = NodeText("ItemSearchResult", 1, 26, 4, 5)
+    local ct = NodeText("ItemSearchResult", 1, 26, 4, 6)
+    return tonumber((pt:gsub("%D", ""))), tonumber((ct:gsub("%D", ""))), pt, ct, NodeText("ItemSearchResult", 1, 5)
 end
 
-local name = tostring(Excel.GetRow("Item", Config.Get("ItemId")).Name)
-Echo("要找的地圖：" .. name)
+-- 按「顯示我的最愛」，等清單出現
+local function ShowFavorites()
+    yield("/callback ItemSearch true " .. FAVORITES)
+    for _ = 1, 6 do
+        yield("/wait 0.5")
+        if ListText(0) ~= "" and ListText(0) ~= "nil" then return true end
+    end
+    return false
+end
 
 -- 0. 沒開就自動打開市場板（名稱從遊戲資料取，與正式腳本相同）
 if not Ready("ItemSearch") then
@@ -77,7 +84,7 @@ if not Ready("ItemSearch") then
         Echo("附近找不到「" .. boardName .. "」，請站到市場板旁再執行")
         return
     end
-    Echo("打開市場板「" .. boardName .. "」（距離 " .. string.format("%.1f", board.DistanceTo or -1) .. "）")
+    Echo("打開市場板（距離 " .. string.format("%.1f", board.DistanceTo or -1) .. "）")
     board:SetAsTarget()
     board:Interact()
     for _ = 1, 20 do
@@ -89,47 +96,43 @@ if not Ready("ItemSearch") then
         return
     end
 end
-Echo("搜尋視窗已開，打開時清單：" .. ListSummary())
 
-for i = 1, 6 do
-    local c = "13 " .. i
-    yield("/callback ItemSearch true " .. c)
-    yield("/wait 1")
-    if Ready("ItemSearchResult") then CloseResult() end
-    if not Ready("ItemSearch") then
-        Echo("「" .. c .. "」把搜尋視窗關掉了，停止測試")
-        break
-    end
-    Echo("「" .. c .. "」清單：" .. ListSummary())
-
-    local idx = FindIndex(name)
-    if idx == nil then
-        Echo("   清單上沒有地圖，不點開")
+-- 1. 分別處理 G15、G17：顯示我的最愛 → 找到這張圖 → 點開上架清單 → 讀價格 → 退出 → 下一張
+for n, itemId in ipairs(MAPS) do
+    local name = tostring(Excel.GetRow("Item", itemId).Name)
+    Echo(n .. ". " .. name .. "（" .. itemId .. "）")
+    if not ShowFavorites() then
+        Echo("   按「顯示我的最愛」後清單是空的")
     else
-        -- 點開地圖的上架清單，等最多 5 秒載入，讀第一筆價格；不購買，讀完就關掉
-        yield("/callback ItemSearch true 5 " .. idx)
-        local opened = false
-        for _ = 1, 10 do
-            yield("/wait 0.5")
-            if Ready("ItemSearchResult") then opened = true break end
-        end
-        if not opened then
-            Echo("   點開地圖（第 " .. idx .. " 項）後，上架清單沒有打開")
+        Echo("   我的最愛清單：" .. ListSummary())
+        local idx = FindIndex(name)
+        if idx == nil then
+            Echo("   清單裡找不到這張圖")
         else
-            local price, count, pt, ct, msg
+            yield("/callback ItemSearch true 5 " .. idx)
+            local opened = false
             for _ = 1, 10 do
                 yield("/wait 0.5")
-                price, count, pt, ct, msg = FirstListing()
-                if price ~= nil and price > 0 then break end
+                if Ready("ItemSearchResult") then opened = true break end
             end
-            if price ~= nil and price > 0 then
-                Echo(string.format("   上架清單第一筆：單價 %d、數量 %s（原文：「%s」「%s」）", price, tostring(count), pt, ct))
+            if not opened then
+                Echo("   點第 " .. idx .. " 項後，上架清單沒有打開")
             else
-                Echo("   讀不到價格（原文：「" .. tostring(pt) .. "」「" .. tostring(ct) .. "」，訊息：「" .. tostring(msg) .. "」）")
+                local price, count, pt, ct, msg
+                for _ = 1, 10 do
+                    yield("/wait 0.5")
+                    price, count, pt, ct, msg = FirstListing()
+                    if price ~= nil and price > 0 then break end
+                end
+                if price ~= nil and price > 0 then
+                    Echo(string.format("   點第 %d 項成功，第一筆：單價 %d、數量 %s", idx, price, tostring(count)))
+                else
+                    Echo("   上架清單打開了但讀不到價格（原文：「" .. tostring(pt) .. "」「" .. tostring(ct) .. "」，訊息：「" .. tostring(msg) .. "」）")
+                end
+                Echo("   退出上架清單：" .. (CloseResult() and "已關閉" or "關不掉"))
             end
-            CloseResult()
         end
     end
-    yield("/wait 2")
+    yield("/wait 1")
 end
-Echo("測試結束（沒有購買）。請告訴我每一組畫面上是哪個分頁")
+Echo("測試結束（沒有購買）")

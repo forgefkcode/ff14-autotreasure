@@ -25,7 +25,7 @@ configs:
     description: 閃避用的插件：Auto（有 BossMod 用 BossMod，否則用 BossMod Reborn）/ BossMod / BossModReborn
   BossModPreset:
     default: "VBM Default"
-    description: 只用於 BossMod Reborn：啟動時 /bmr ar set 這個預設（打錯名稱 BMR 會強制停用，留空 = 不切換）；BossMod 一律改開 AI 模式（/vbm ai on）
+    description: 只用於 BossMod Reborn：啟動時 /bmr ar set 這個預設（打錯名稱 BMR 會強制停用，留空 = 不切換）；BossMod 改用 AI 模式，跟著 Wrath 一起開關
   CrossWorld:
     default: true
     description: 每輪開始前查 Universalis，傳送到資料中心內地圖最便宜的伺服器買圖並挖寶（需要 Lifestream）
@@ -627,14 +627,17 @@ function Api.LifestreamBusy()
     return ok and busy == true
 end
 
--- 開關 Wrath 時同步記錄狀態，CombatTick / TRAVEL 依 State.wrathOn 判斷要不要再開
+-- 開關 Wrath 時同步記錄狀態，CombatTick / TRAVEL 依 State.wrathOn 判斷要不要再開。
+-- 用 BossMod（/vbm）時，AI 模式跟著 Wrath 一起開關
 function Api.WrathOn()
     yield("/wrath auto on")
+    if State.bossCmd == "/vbm" then yield("/vbm ai on") end
     State.wrathOn = true
 end
 
 function Api.WrathOff()
     yield("/wrath auto off")
+    if State.bossCmd == "/vbm" then yield("/vbm ai off") end
     State.wrathOn = false
 end
 
@@ -985,11 +988,10 @@ function Handlers.INIT()
         return "END"
     end
     if hasVbm and hasBmr then Log("提醒：BossMod 和 BossMod Reborn 同時啟用，兩個會搶著閃避，建議只開一個") end
+    State.bossCmd = bossCmd
     if bossCmd == "/vbm" then
-        -- BossMod（繁中版）沒有內建「VBM Default」預設，直接開 AI 模式負責閃避；腳本結束時關掉
-        yield("/vbm ai on")
-        State.vbmAiOn = true
-        Log("BossMod AI 模式：開啟")
+        -- BossMod（繁中版）沒有內建「VBM Default」預設，改用 AI 模式閃避，跟著 Wrath 一起開關
+        Log("BossMod AI 模式會跟著 Wrath 一起開關")
     elseif Cfg.BossModPreset ~= nil and Cfg.BossModPreset ~= "" then
         yield(bossCmd .. " ar set " .. Cfg.BossModPreset)
         Log("BossMod Reborn 預設：" .. Cfg.BossModPreset)
@@ -1833,10 +1835,6 @@ end
 
 function Handlers.END()
     StopAutomation()
-    if State.vbmAiOn then
-        yield("/vbm ai off")
-        State.vbmAiOn = false
-    end
     local stages = #State.stageLog > 0 and table.concat(State.stageLog, ",") or "無"
     yield(string.format("/echo [G15] 結束：完成 %d 張，寶物庫 %d 次（到達關數 %s），錯誤 %d 次，買圖 %d 張共 %d gil，換伺服器 %d 次，完成 %d 輪",
         State.mapsDone, State.dungeonRuns, stages, State.errorCount, State.mapsBought or 0, State.gilSpent or 0, State.worldTrips or 0, State.roundsDone or 0))

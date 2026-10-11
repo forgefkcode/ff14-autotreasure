@@ -95,6 +95,9 @@ configs:
   PotionItemName:
     default: ""
     description: 回復藥物品名稱，要與遊戲內一字不差（空白 = 不喝）；背包有 HQ 會優先用 HQ
+  PotionRetries:
+    default: 5
+    description: 每次要喝藥時最多連續試幾次（Wrath 運作中可能卡掉喝藥），喝到才進入冷卻
   PotionCooldown:
     default: 60
     description: 喝藥冷卻秒數（喝過之後至少隔這麼久才會再喝）
@@ -242,7 +245,7 @@ for _, k in ipairs({
     "MapItemId", "MaxRounds", "MaxMaps", "EnterDungeon", "DecipheredItemId", "FlagWait", "AutoBuy",
     "BossModPlugin", "BossModPreset", "CrossWorld", "DataCenter", "MaxMapPrice", "GilFloor", "MarketTerritoryId", "MarketAetheryte", "MarketX", "MarketY", "MarketZ",
     "FavoritesCallback", "MarketBoardName", "DoorChoice", "WalkRadius", "DigRadius", "LeashRadius", "PortalWait",
-    "RouletteWait", "EnemySearchRange", "PotionHpPercent", "PotionItemName", "PotionCooldown", "UseSprint", "MaxErrors", "ChestName", "DungeonChestName",
+    "RouletteWait", "EnemySearchRange", "PotionHpPercent", "PotionItemName", "PotionRetries", "PotionCooldown", "UseSprint", "MaxErrors", "ChestName", "DungeonChestName",
     "DoorName", "PortalName", "AetheryteUrqopacha", "AetheryteKozamauka", "AetheryteYakTel",
     "AetheryteShaaloani", "AetheryteHeritageFound", "EchoLogs",
 }) do
@@ -1019,14 +1022,16 @@ end
 local function MaybeDrinkPotion()
     if Cfg.PotionHpPercent <= 0 or Cfg.PotionItemName == "" then return end
     if Api.HpPercent() >= Cfg.PotionHpPercent then return end
+    -- 冷卻中（只有喝成功才會進入冷卻），或上一輪全部失敗後的 2 秒等待中
     if os.clock() - (State.lastPotionAt or -1e9) < Cfg.PotionCooldown then return end
-    State.lastPotionAt = os.clock()   -- 不管成功與否都等冷卻，避免一直重試
+    if os.clock() < (State.potionRetryAt or 0) then return end
     local id, hq = Api.FindInventoryItem(Cfg.PotionItemName)
     if id == nil then
         if not State.potionWarned then
             Log("背包裡找不到「" .. Cfg.PotionItemName .. "」，無法喝藥")
             State.potionWarned = true
         end
+        State.lastPotionAt = os.clock()   -- 沒有藥水：等一個冷卻再找，不要一直掃背包
         return
     end
     -- 直接呼叫遊戲的使用道具：Actions.ExecuteAction(物品 ID, ActionType.Item)，HQ 的 ID 要加 1000000。
@@ -1040,16 +1045,24 @@ local function MaybeDrinkPotion()
         end
         return
     end
+    -- Wrath 自動循環運作時可能會卡掉喝藥：連續重試 PotionRetries 次，每次 0.5 秒後看藥水有沒有少；
+    -- 喝到就進入冷卻，全部失敗則 2 秒後（HP 還低的話）再來一輪
     local actionId = hq and (id + 1000000) or id
-    local before = Inventory.GetItemCount(id) + Inventory.GetHqItemCount(id)
-    local ok, err = pcall(function() Actions.ExecuteAction(actionId, ActionType.Item) end)
-    yield("/wait 1.5")
-    local after = Inventory.GetItemCount(id) + Inventory.GetHqItemCount(id)
-    if after < before then
-        Log("喝藥：" .. Cfg.PotionItemName .. (hq and "（HQ）" or ""))
-    else
-        Log("喝藥失敗（藥水數量沒有減少）" .. (ok and "" or ("：" .. tostring(err))))
+    local function Count() return Inventory.GetItemCount(id) + Inventory.GetHqItemCount(id) end
+    local before = Count()
+    local lastErr = nil
+    for attempt = 1, Cfg.PotionRetries do
+        local ok, err = pcall(function() Actions.ExecuteAction(actionId, ActionType.Item) end)
+        if not ok then lastErr = err end
+        yield("/wait 0.5")
+        if Count() < before then
+            State.lastPotionAt = os.clock()
+            Log("喝藥：" .. Cfg.PotionItemName .. (hq and "（HQ）" or "") .. "（第 " .. attempt .. " 次成功）")
+            return
+        end
     end
+    State.potionRetryAt = os.clock() + 2
+    Log("喝藥失敗（試了 " .. Cfg.PotionRetries .. " 次）" .. (lastErr and ("：" .. tostring(lastErr)) or "") .. "，2 秒後再試")
 end
 
 -- 戰鬥中：解除對寶箱的選取（選著寶箱 Wrath 不會自動選怪），交給 Wrath 打；

@@ -7,8 +7,6 @@ plugin_dependencies:
 - vnavmesh
 - WrathCombo
 - Lifestream
-chat_message_filter:
-  message_contains: "將陷阱引來的魔物全部打倒了"
 configs:
   MapItemId:
     default: 39591
@@ -76,9 +74,6 @@ configs:
   DigRadius:
     default: 3
     description: 距離旗標多近開始挖寶
-  FieldClearMessage:
-    default: "將陷阱引來的魔物全部打倒了！"
-    description: 野外陷阱魔物全部打倒時的系統訊息；出現就結束戰鬥去開寶箱
   LeashRadius:
     default: 15
     description: 野外戰鬥時離寶箱（觸發陷阱的位置）多遠就走回去，太遠陷阱戰鬥會被重置
@@ -210,7 +205,6 @@ local Cfg = {
     MarketBoardName  = Config.Get("MarketBoardName"),
     WalkRadius       = Config.Get("WalkRadius"),
     DigRadius        = Config.Get("DigRadius"),
-    FieldClearMessage = Config.Get("FieldClearMessage"),
     LeashRadius      = Config.Get("LeashRadius"),
     PortalWait       = Config.Get("PortalWait"),
     RouletteWait     = Config.Get("RouletteWait"),
@@ -1040,17 +1034,6 @@ local function EnsureWrathOff()
     end
 end
 
--- SND 聊天訊息觸發：函式名稱固定為 OnChatMessage，訊息內容在 TriggerData.message（寫法同 pot0to 腳本）。
--- 開頭設定區的 chat_message_filter 限制只有含「將陷阱引來的魔物全部打倒了」的訊息才會觸發，
--- 否則腳本自己印的 /echo 和其他系統訊息每一行都會觸發，可能讓 SND 出現 Unknown error。
--- 改了 FieldClearMessage 的話，開頭的 message_contains 也要一起改
-function OnChatMessage()
-    local ok, message = pcall(function() return tostring(TriggerData.message) end)
-    if ok and message ~= nil and Cfg.FieldClearMessage ~= "" and message:find(Cfg.FieldClearMessage, 1, true) then
-        State.fieldCleared = true
-    end
-end
-
 local Handlers = {}
 
 function Handlers.INIT()
@@ -1427,27 +1410,25 @@ local function LeaveCombat()
     State.wrathOn = false
 end
 
--- 野外戰鬥結束：聊天出現 FieldClearMessage（「將陷阱引來的魔物全部打倒了！」）就算打完，
--- 去開寶箱並接著找傳送魔紋。保險：沒收到訊息時，脫離戰鬥滿 10 秒且附近找不到敵人也算結束
+-- 野外戰鬥結束：脫離戰鬥滿 3 秒、且 30 內找不到敵人就算打完，去開寶箱並接著找傳送魔紋。
+-- 不用聊天訊息觸發（OnChatMessage）：SND 會在主腳本同一個 Lua 環境裡插隊執行它，
+-- 每行聊天都觸發，會讓 SND 出現「Unknown error」並直接停掉腳本。
+-- 打完後又被旁邊的怪纏上，由 FIELD_FIGHT 先打完再回來
 function Handlers.FIELD_COMBAT()
     if Api.Condition(Cond.dead) then LeaveCombat(); return "DEAD" end
-    local cleared = State.fieldCleared
-    if not cleared and Api.Condition(Cond.inCombat) then
+    if Api.Condition(Cond.inCombat) then
         State.lastInCombat = Elapsed()
         StayNearCoffer()
         CombatTick()
         return nil
     end
-    if not cleared then
-        if Elapsed() - (State.lastInCombat or 0) < 10 then return nil end
-        if Api.AnyEnemyLeft(30) then
-            State.lastInCombat = Elapsed()
-            CombatTick()
-            return nil
-        end
+    if Elapsed() - (State.lastInCombat or 0) < 3 then return nil end
+    if Api.AnyEnemyLeft(30) then
+        State.lastInCombat = Elapsed()
+        CombatTick()
+        return nil
     end
-    State.fieldCleared = false
-    Log(cleared and "陷阱魔物全部打倒，去開寶箱" or "附近沒有敵人了，去開寶箱")
+    Log("陷阱魔物打完了，去開寶箱")
     LeaveCombat()
     Api.ClearTarget()
     yield("/wait 3")
@@ -1953,7 +1934,6 @@ local function Transition(next)
         return
     end
     if next == "ERROR" then State.errorFrom = State.current end
-    if next == "OPEN_COFFER" then State.fieldCleared = false end
     if next == "TRAVEL" then State.cofferPos, State.leashing = nil, false end
     Log(State.current .. " → " .. next)
     State.current = next

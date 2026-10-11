@@ -297,6 +297,9 @@ local MAX_STAGES       = 5
 -- 2. Api 轉接層（SND v2 API；標 TODO 者待實測修正）
 -------------------------------------------------------------------------------
 
+-- 先宣告 Log / LogError（定義在第 3 段），Api 的函式也要用得到
+local Log, LogError
+
 local Api = {}
 
 function Api.Condition(id)
@@ -910,11 +913,11 @@ State = {
     stageLog      = {},
 }
 
-local function Log(msg)
+function Log(msg)
     if Cfg.EchoLogs == "All" then yield("/echo [G17] " .. msg) end
 end
 
-local function LogError(msg)
+function LogError(msg)
     if Cfg.EchoLogs ~= "None" then yield("/echo [G17][錯誤] " .. msg) end
 end
 

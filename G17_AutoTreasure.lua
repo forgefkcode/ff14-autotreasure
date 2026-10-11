@@ -97,7 +97,10 @@ configs:
     description: HP 低於此百分比時喝藥（0 = 不喝）
   PotionItemName:
     default: ""
-    description: 回復藥物品名稱（空白 = 不喝）
+    description: 回復藥物品名稱，要與遊戲內一字不差（空白 = 不喝）；背包有 HQ 會優先用 HQ
+  PotionCooldown:
+    default: 60
+    description: 喝藥冷卻秒數（喝過之後至少隔這麼久才會再喝）
   UseSprint:
     default: false
     description: 移動時是否使用衝刺
@@ -240,7 +243,7 @@ for _, k in ipairs({
     "MapItemId", "MaxRounds", "MaxMaps", "EnterDungeon", "DecipheredItemId", "FlagWait", "AutoBuy",
     "BossModPlugin", "BossModPreset", "CrossWorld", "DataCenter", "MaxMapPrice", "GilFloor", "MarketTerritoryId", "MarketAetheryte", "MarketX", "MarketY", "MarketZ",
     "FavoritesCallback", "MarketBoardName", "DoorChoice", "WalkRadius", "DigRadius", "FieldClearMessage", "LeashRadius", "PortalWait",
-    "RouletteWait", "EnemySearchRange", "PotionHpPercent", "PotionItemName", "UseSprint", "MaxErrors", "ChestName", "DungeonChestName",
+    "RouletteWait", "EnemySearchRange", "PotionHpPercent", "PotionItemName", "PotionCooldown", "UseSprint", "MaxErrors", "ChestName", "DungeonChestName",
     "DoorName", "PortalName", "AetheryteUrqopacha", "AetheryteKozamauka", "AetheryteYakTel",
     "AetheryteShaaloani", "AetheryteHeritageFound", "EchoLogs",
 }) do
@@ -653,6 +656,29 @@ function Api.AnyEnemyLeft(maxDistance)
     return false
 end
 
+-- 在背包 4 頁裡找名稱相符的物品，回傳 (物品 ID, 是否有 HQ)；找不到回 nil
+function Api.FindInventoryItem(name)
+    local foundId, hasHq = nil, false
+    local ok = pcall(function()
+        for _, container in ipairs({ InventoryType.Inventory1, InventoryType.Inventory2,
+                                     InventoryType.Inventory3, InventoryType.Inventory4 }) do
+            local items = Inventory.GetInventoryContainer(container).Items
+            for i = 0, items.Count - 1 do
+                local it = items[i]
+                if it ~= nil and not it.IsEmpty then
+                    local id = it.BaseItemId
+                    if id == foundId or tostring(Excel.GetRow("Item", id).Name) == name then
+                        foundId = id
+                        if it.IsHighQuality then hasHq = true end
+                    end
+                end
+            end
+        end
+    end)
+    if not ok then return nil end
+    return foundId, hasHq
+end
+
 function Api.GeneralAction(id)
     Actions.ExecuteGeneralAction(id)
 end
@@ -984,11 +1010,24 @@ local function CloseMarket()
     end
 end
 
+-- 喝藥：HP 低於 PotionHpPercent 且距離上次超過 PotionCooldown 秒時，從背包找藥水直接使用（有 HQ 優先用 HQ）。
+-- 不用 /item：它只用 NQ、每次都要掃整張物品表，找不到時還會讓 SND 報錯
 local function MaybeDrinkPotion()
     if Cfg.PotionHpPercent <= 0 or Cfg.PotionItemName == "" then return end
-    if Api.HpPercent() < Cfg.PotionHpPercent then
-        yield('/item "' .. Cfg.PotionItemName .. '"')
+    if Api.HpPercent() >= Cfg.PotionHpPercent then return end
+    if os.clock() - (State.lastPotionAt or -1e9) < Cfg.PotionCooldown then return end
+    State.lastPotionAt = os.clock()   -- 不管成功與否都等冷卻，避免一直重試
+    local id, hq = Api.FindInventoryItem(Cfg.PotionItemName)
+    if id == nil then
+        if not State.potionWarned then
+            Log("背包裡找不到「" .. Cfg.PotionItemName .. "」，無法喝藥")
+            State.potionWarned = true
+        end
+        return
     end
+    local actionId = hq and (id + 1000000) or id
+    local ok = pcall(function() Actions.ExecuteAction(actionId, ActionType.Item) end)
+    Log(ok and ("喝藥：" .. Cfg.PotionItemName .. (hq and "（HQ）" or "")) or "喝藥失敗")
 end
 
 -- 戰鬥中：解除對寶箱的選取（選著寶箱 Wrath 不會自動選怪），交給 Wrath 打；

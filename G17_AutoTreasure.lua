@@ -1037,7 +1037,7 @@ local function CloseMarket()
 end
 
 -- 喝藥：HP 低於 PotionHpPercent 且距離上次超過 PotionCooldown 秒時，從背包找藥水直接使用（有 HQ 優先用 HQ）。
--- 先掃背包確認有這瓶藥，再用 SND 的 /item 使用（有 HQ 加 <hq>）
+-- 先掃背包確認有這瓶藥，再直接呼叫遊戲的使用道具（有 HQ 優先用 HQ）
 local function MaybeDrinkPotion()
     if Cfg.PotionHpPercent <= 0 or Cfg.PotionItemName == "" then return end
     if Api.HpPercent() >= Cfg.PotionHpPercent then return end
@@ -1051,14 +1051,27 @@ local function MaybeDrinkPotion()
         end
         return
     end
-    -- 用 SND 的 /item（底層是遊戲的使用道具，等同在背包點藥水）；有 HQ 加 <hq>。
-    -- 不用 Actions.ExecuteAction：在實測中沒有作用（飛斧也一樣）
-    local cmd = '/item "' .. Cfg.PotionItemName .. '"' .. (hq and " <hq>" or "")
-    local ok, err = pcall(function() yield(cmd) end)
-    if ok then
+    -- 直接呼叫遊戲的使用道具（ActionType.Item，數字代號 2；HQ 的 ID 要加 1000000）。
+    -- 不用 /item：在 Lua 腳本裡它會被當成遊戲聊天指令送出，繁中版沒有這個指令。
+    -- 依序試三種寫法，喝完用背包數量確認有沒有成功
+    local actionId = hq and (id + 1000000) or id
+    local before = Inventory.GetItemCount(id) + Inventory.GetHqItemCount(id)
+    local errors = {}
+    for _, call in ipairs({
+        function() Actions.ExecuteAction(actionId, 2) end,
+        function() Actions.ExecuteAction(actionId, ActionType.Item) end,
+        function() Actions.ExecuteAction(actionId, "Item") end,
+    }) do
+        local ok, err = pcall(call)
+        if ok then break end
+        table.insert(errors, tostring(err))
+    end
+    yield("/wait 1.5")
+    local after = Inventory.GetItemCount(id) + Inventory.GetHqItemCount(id)
+    if after < before then
         Log("喝藥：" .. Cfg.PotionItemName .. (hq and "（HQ）" or ""))
     else
-        Log("喝藥失敗：" .. tostring(err))
+        Log("喝藥失敗（藥水數量沒有減少）" .. (#errors > 0 and ("：" .. table.concat(errors, "；")) or ""))
     end
 end
 

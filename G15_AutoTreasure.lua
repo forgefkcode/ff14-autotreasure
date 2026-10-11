@@ -7,6 +7,8 @@ plugin_dependencies:
 - vnavmesh
 - WrathCombo
 - Lifestream
+chat_message_filter:
+  message_contains: "將陷阱引來的魔物全部打倒了"
 configs:
   MapItemId:
     default: 39591
@@ -1032,7 +1034,10 @@ local function EnsureWrathOff()
     end
 end
 
--- SND 聊天訊息觸發：函式名稱固定為 OnChatMessage，訊息內容在 TriggerData.message（寫法同 pot0to 腳本）
+-- SND 聊天訊息觸發：函式名稱固定為 OnChatMessage，訊息內容在 TriggerData.message（寫法同 pot0to 腳本）。
+-- 開頭設定區的 chat_message_filter 限制只有含「將陷阱引來的魔物全部打倒了」的訊息才會觸發，
+-- 否則腳本自己印的 /echo 和其他系統訊息每一行都會觸發，可能讓 SND 出現 Unknown error。
+-- 改了 FieldClearMessage 的話，開頭的 message_contains 也要一起改
 function OnChatMessage()
     local ok, message = pcall(function() return tostring(TriggerData.message) end)
     if ok and message ~= nil and Cfg.FieldClearMessage ~= "" and message:find(Cfg.FieldClearMessage, 1, true) then
@@ -1385,7 +1390,10 @@ local function StayNearCoffer()
         return
     end
     if not Api.NavRunning() then
-        if not State.leashing then Log("離寶箱太遠，走回去") end
+        if not State.leashing and os.clock() - (State.leashLogAt or -100) > 10 then
+            Log("離寶箱太遠，走回去")
+            State.leashLogAt = os.clock()
+        end
         Api.NavMoveTo(Api.PointOnFloor(anchor.X, anchor.Z) or anchor, false)
         State.leashing = true
     end

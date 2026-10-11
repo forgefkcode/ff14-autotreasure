@@ -78,6 +78,9 @@ configs:
   FieldClearMessage:
     default: "將陷阱引來的魔物全部打倒了！"
     description: 野外陷阱魔物全部打倒時的系統訊息；出現就結束戰鬥去開寶箱
+  LeashRadius:
+    default: 15
+    description: 野外戰鬥時離寶箱（觸發陷阱的位置）多遠就走回去，太遠陷阱戰鬥會被重置
   PortalWait:
     default: 10
     description: 開箱後等待傳送門出現的秒數
@@ -234,7 +237,7 @@ local Cfg = {}
 for _, k in ipairs({
     "MapItemId", "MaxRounds", "MaxMaps", "EnterDungeon", "DecipheredItemId", "FlagWait", "AutoBuy",
     "BmrPreset", "CrossWorld", "DataCenter", "MaxMapPrice", "GilFloor", "MarketTerritoryId", "MarketAetheryte", "MarketX", "MarketY", "MarketZ",
-    "FavoritesCallback", "MarketBoardName", "DoorChoice", "WalkRadius", "DigRadius", "FieldClearMessage", "PortalWait",
+    "FavoritesCallback", "MarketBoardName", "DoorChoice", "WalkRadius", "DigRadius", "FieldClearMessage", "LeashRadius", "PortalWait",
     "RouletteWait", "EnemySearchRange", "PotionHpPercent", "PotionItemName", "UseSprint", "MaxErrors", "ChestName", "DungeonChestName",
     "DoorName", "PortalName", "AetheryteUrqopacha", "AetheryteKozamauka", "AetheryteYakTel",
     "AetheryteShaaloani", "AetheryteHeritageFound", "EchoLogs",
@@ -985,6 +988,24 @@ end
 
 -- 戰鬥中：解除對寶箱的選取（選著寶箱 Wrath 不會自動選怪），交給 Wrath 打；
 -- 戰鬥結束後由 LOOT / DUNGEON_LOOT 重新選寶箱互動
+-- 野外戰鬥不要離寶箱太遠（太遠陷阱戰鬥會被重置）：離觸發陷阱的位置超過 LeashRadius 就走回去
+local function StayNearCoffer()
+    local anchor = State.cofferPos
+    if anchor == nil or InDuty() then return end
+    if Distance2D(Api.PlayerPos(), anchor) <= Cfg.LeashRadius then
+        if State.leashing then
+            Api.NavStop()
+            State.leashing = false
+        end
+        return
+    end
+    if not Api.NavRunning() then
+        if not State.leashing then Log("離寶箱太遠，走回去") end
+        Api.NavMoveTo(Api.PointOnFloor(anchor.X, anchor.Z) or anchor, false)
+        State.leashing = true
+    end
+end
+
 local function CombatTick()
     local t = Entity.Target
     if t ~= nil and (t.Name == Cfg.ChestName or t.Name == Cfg.DungeonChestName) then
@@ -992,7 +1013,7 @@ local function CombatTick()
     end
     -- 戰鬥開始時選一次最近的敵人，之後交給 Wrath，不保持鎖定
     if not State.combatTargeted then
-        Api.EngageNearestEnemy()
+        Api.EngageNearestEnemy(InDuty() and Cfg.EnemySearchRange or 30)
         State.combatTargeted = true
     end
     if not State.wrathOn then
@@ -1333,6 +1354,7 @@ function Handlers.OPEN_COFFER()
     if Api.Condition(Cond.inCombat) then
         State.deciphered = false   -- 觸發陷阱時地圖已消耗
         State.lastFlag = Api.FlagPos()
+        State.cofferPos = Api.PlayerPos()
         return "FIELD_COMBAT"
     end
     if Api.Condition(Cond.occupiedInEvent) then return nil end
@@ -1348,6 +1370,7 @@ function Handlers.FIELD_COMBAT()
     local cleared = State.fieldCleared
     if not cleared and Api.Condition(Cond.inCombat) then
         State.lastInCombat = Elapsed()
+        StayNearCoffer()
         CombatTick()
         return nil
     end
@@ -1438,6 +1461,7 @@ function Handlers.FIELD_FIGHT()
     if Api.Condition(Cond.inCombat) then
         State.lastInCombat = Elapsed()
         if Api.Condition(Cond.mounted) then Dismount() end
+        StayNearCoffer()
         CombatTick()
         return nil
     end
@@ -1880,6 +1904,7 @@ local function Transition(next)
     end
     if next == "ERROR" then State.errorFrom = State.current end
     if next == "OPEN_COFFER" then State.fieldCleared = false end
+    if next == "TRAVEL" then State.cofferPos, State.leashing = nil, false end
     if next == "CHECK_MAP" then State.leaveSent = false end
     Log(State.current .. " → " .. next)
     State.current = next

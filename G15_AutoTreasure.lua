@@ -24,7 +24,7 @@ configs:
     description: 自動輸出插件：Auto（有 RotationSolver Reborn 用 RSR，否則用 Wrath Combo）/ RotationSolver / WrathCombo
   BossModPlugin:
     default: "Auto"
-    description: 閃避插件：Auto（有 BossMod Reborn 用 BMR，否則用 BossMod）/ BossModReborn / BossMod。只開 AI 閃避，寶物庫戰鬥中才開
+    description: 閃避插件：Auto（有 BossMod 用 BossMod，否則用 BossMod Reborn）/ BossMod / BossModReborn。只開 AI 閃避，寶物庫戰鬥中才開
   CrossWorld:
     default: true
     description: 每輪開始前查 Universalis，傳送到資料中心內地圖最便宜的伺服器買圖並挖寶（需要 Lifestream）
@@ -85,18 +85,6 @@ configs:
   EnemySearchRange:
     default: 100
     description: 寶物庫內找敵人的範圍（選最近的敵人、確認是否打完都用這個）
-  PotionHpPercent:
-    default: 40
-    description: HP 低於此百分比時喝藥（0 = 不喝）
-  PotionItemName:
-    default: ""
-    description: 回復藥物品名稱，要與遊戲內一字不差（空白 = 不喝）；背包有 HQ 會優先用 HQ
-  PotionRetries:
-    default: 5
-    description: 每次要喝藥時最多連續試幾次（Wrath 運作中可能卡掉喝藥），喝到才進入冷卻
-  PotionCooldown:
-    default: 60
-    description: 喝藥冷卻秒數（喝過之後至少隔這麼久才會再喝）
   UseSprint:
     default: false
     description: 移動時是否使用衝刺
@@ -208,10 +196,6 @@ local Cfg = {
     PortalWait       = Config.Get("PortalWait"),
     RouletteWait     = Config.Get("RouletteWait"),
     EnemySearchRange = Config.Get("EnemySearchRange"),
-    PotionHpPercent  = Config.Get("PotionHpPercent"),
-    PotionItemName   = Config.Get("PotionItemName"),
-    PotionRetries    = Config.Get("PotionRetries"),
-    PotionCooldown   = Config.Get("PotionCooldown"),
     UseSprint        = Config.Get("UseSprint"),
     MaxErrors        = Config.Get("MaxErrors"),
     SphereName       = Config.Get("SphereName"),
@@ -617,29 +601,6 @@ function Api.AnyEnemyLeft(maxDistance)
     return false
 end
 
--- 在背包 4 頁裡找名稱相符的物品，回傳 (物品 ID, 是否有 HQ)；找不到回 nil
-function Api.FindInventoryItem(name)
-    local foundId, hasHq = nil, false
-    local ok = pcall(function()
-        for _, container in ipairs({ InventoryType.Inventory1, InventoryType.Inventory2,
-                                     InventoryType.Inventory3, InventoryType.Inventory4 }) do
-            local items = Inventory.GetInventoryContainer(container).Items
-            for i = 0, items.Count - 1 do
-                local it = items[i]
-                if it ~= nil and not it.IsEmpty then
-                    local id = it.BaseItemId
-                    if id == foundId or tostring(Excel.GetRow("Item", id).Name) == name then
-                        foundId = id
-                        if it.IsHighQuality then hasHq = true end
-                    end
-                end
-            end
-        end
-    end)
-    if not ok then return nil end
-    return foundId, hasHq
-end
-
 function Api.GeneralAction(id)
     Actions.ExecuteGeneralAction(id)
 end
@@ -965,54 +926,6 @@ local function CloseMarket()
     end
 end
 
--- 喝藥：HP 低於 PotionHpPercent 且距離上次超過 PotionCooldown 秒時，從背包找藥水直接使用（有 HQ 優先用 HQ）。
--- 先掃背包確認有這瓶藥，再直接呼叫遊戲的使用道具（有 HQ 優先用 HQ）
-local function MaybeDrinkPotion()
-    if Cfg.PotionHpPercent <= 0 or Cfg.PotionItemName == "" then return end
-    if Api.HpPercent() >= Cfg.PotionHpPercent then return end
-    -- 冷卻中（只有喝成功才會進入冷卻），或上一輪全部失敗後的 2 秒等待中
-    if os.clock() - (State.lastPotionAt or -1e9) < Cfg.PotionCooldown then return end
-    if os.clock() < (State.potionRetryAt or 0) then return end
-    local id, hq = Api.FindInventoryItem(Cfg.PotionItemName)
-    if id == nil then
-        if not State.potionWarned then
-            Log("背包裡找不到「" .. Cfg.PotionItemName .. "」，無法喝藥")
-            State.potionWarned = true
-        end
-        State.lastPotionAt = os.clock()   -- 沒有藥水：等一個冷卻再找，不要一直掃背包
-        return
-    end
-    -- 直接呼叫遊戲的使用道具：Actions.ExecuteAction(物品 ID, ActionType.Item)，HQ 的 ID 要加 1000000。
-    -- 只能傳 SND 提供的列舉值 ActionType.Item：傳數字或字串給列舉參數會在 Lua 外丟出 .NET 例外，
-    -- pcall 攔不到，SND 會顯示 Unknown error 並直接停掉腳本。
-    -- 不用 /item：在 Lua 腳本裡它會被當成遊戲聊天指令送出，繁中版沒有這個指令
-    if ActionType == nil or ActionType.Item == nil then
-        if not State.potionWarned then
-            Log("讀不到 ActionType.Item，無法喝藥")
-            State.potionWarned = true
-        end
-        return
-    end
-    -- Wrath 自動循環運作時可能會卡掉喝藥：連續重試 PotionRetries 次，每次 0.5 秒後看藥水有沒有少；
-    -- 喝到就進入冷卻，全部失敗則 2 秒後（HP 還低的話）再來一輪
-    local actionId = hq and (id + 1000000) or id
-    local function Count() return Inventory.GetItemCount(id) + Inventory.GetHqItemCount(id) end
-    local before = Count()
-    local lastErr = nil
-    for attempt = 1, Cfg.PotionRetries do
-        local ok, err = pcall(function() Actions.ExecuteAction(actionId, ActionType.Item) end)
-        if not ok then lastErr = err end
-        yield("/wait 0.5")
-        if Count() < before then
-            State.lastPotionAt = os.clock()
-            Log("喝藥：" .. Cfg.PotionItemName .. (hq and "（HQ）" or "") .. "（第 " .. attempt .. " 次成功）")
-            return
-        end
-    end
-    State.potionRetryAt = os.clock() + 2
-    Log("喝藥失敗（試了 " .. Cfg.PotionRetries .. " 次）" .. (lastErr and ("：" .. tostring(lastErr)) or "") .. "，2 秒後再試")
-end
-
 -------------------------------------------------------------------------------
 -- 4. 狀態處理函式
 -------------------------------------------------------------------------------
@@ -1064,14 +977,14 @@ function Handlers.INIT()
     if hasRsr and hasWrath then Log("提醒：RotationSolver 和 Wrath Combo 同時啟用，兩個會搶著放技能，建議只開一個") end
     State.rotation = rotation
 
-    -- 閃避插件：BossMod Reborn（/bmrai on|off）或 BossMod（/vbm ai on|off），只用 AI 閃避、寶物庫戰鬥中才開
+    -- 閃避插件：BossMod（/vbm ai on|off）或 BossMod Reborn（/bmrai on|off），只用 AI 閃避、寶物庫戰鬥中才開
     local hasVbm, hasBmr = Api.PluginInstalled("BossMod"), Api.PluginInstalled("BossModReborn")
     local choice = Cfg.BossModPlugin or "Auto"
     local bossCmd = nil
-    if choice == "BossModReborn" or (choice == "Auto" and hasBmr) then
-        bossCmd = hasBmr and "/bmr" or nil
-    elseif choice == "BossMod" or (choice == "Auto" and hasVbm) then
+    if choice == "BossMod" or (choice == "Auto" and hasVbm) then
         bossCmd = hasVbm and "/vbm" or nil
+    elseif choice == "BossModReborn" or (choice == "Auto" and hasBmr) then
+        bossCmd = hasBmr and "/bmr" or nil
     end
     if bossCmd == nil then
         LogError("沒有偵測到啟用中的 BossMod Reborn / BossMod（設定：" .. choice .. "）")
@@ -1079,10 +992,8 @@ function Handlers.INIT()
     end
     if hasVbm and hasBmr then Log("提醒：BossMod 和 BossMod Reborn 同時啟用，兩個會搶著閃避，建議只開一個") end
     State.bossCmd = bossCmd
-    if bossCmd == "/bmr" then
-        -- 清掉 BMR 的自動輸出預設，避免跟 RSR / Wrath 搶著放技能；BMR 只負責 AI 閃避
-        yield("/bmr ar clear")
-    end
+    -- 清掉 BossMod / BMR 自己的自動輸出預設，避免跟 RSR / Wrath 搶著放技能；它們只負責 AI 閃避
+    yield(bossCmd .. " ar clear")
     Log("輸出：" .. (rotation == "RotationSolver" and "RotationSolver Reborn" or "Wrath Combo")
         .. "；閃避：" .. (bossCmd == "/bmr" and "BossMod Reborn" or "BossMod") .. " AI（只在寶物庫戰鬥中開）")
     if Cfg.MapItemId == 0 then
@@ -1408,7 +1319,7 @@ local function CombatTick()
         Api.NavStop()
         Api.WrathOn()
     end
-    MaybeDrinkPotion()
+    -- 喝藥交給 RSR（它有自動吃藥），腳本不處理
 end
 
 local function LeaveCombat()

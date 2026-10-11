@@ -167,6 +167,8 @@ import("System.Numerics")
 -------------------------------------------------------------------------------
 
 local WARRIOR_JOB_ID = 21
+-- 寶物庫（Cenote Ja Ja Gural）的地區 ID，取自 XIVAPI ContentFinderCondition
+local VAULT_TERRITORY = 1209
 
 -- 黃金版地區 territory ID（TODO 待確認）→ 對應的傳送設定
 local G17_ZONES = {
@@ -727,16 +729,23 @@ function Api.LifestreamBusy()
 end
 
 -- 開關 Wrath 時同步記錄狀態，CombatTick / TRAVEL 依 State.wrathOn 判斷要不要再開。
--- 用 BossMod（/vbm）時，AI 模式跟著 Wrath 一起開關
+-- 用 BossMod（/vbm）時，AI 模式只在寶物庫內跟著 Wrath 一起開關（野外不開）
 function Api.WrathOn()
     yield("/wrath auto on")
-    if State.bossCmd == "/vbm" then yield("/vbm ai on") end
+    -- BossMod AI 只在寶物庫內開：野外開 AI 會跟「離寶箱太遠就走回去」互相拉扯
+    if State.bossCmd == "/vbm" and Api.Territory() == VAULT_TERRITORY then
+        yield("/vbm ai on")
+        State.vbmAiOn = true
+    end
     State.wrathOn = true
 end
 
 function Api.WrathOff()
     yield("/wrath auto off")
-    if State.bossCmd == "/vbm" then yield("/vbm ai off") end
+    if State.vbmAiOn then
+        yield("/vbm ai off")
+        State.vbmAiOn = false
+    end
     State.wrathOn = false
 end
 
@@ -936,9 +945,6 @@ local function Distance2D(a, b)
     local dx, dz = a.X - b.X, a.Z - b.Z
     return math.sqrt(dx * dx + dz * dz)
 end
-
--- 寶物庫（Cenote Ja Ja Gural）的地區 ID，取自 XIVAPI ContentFinderCondition
-local VAULT_TERRITORY = 1209
 
 -- 是否在寶物庫內：看所在地區。不用角色狀態 34 / 56（被副本綁定），
 -- 野外觸發陷阱後那個狀態也會亮，會誤判成已進副本而跳過傳送魔紋
@@ -1188,7 +1194,7 @@ function Handlers.INIT()
     State.bossCmd = bossCmd
     if bossCmd == "/vbm" then
         -- BossMod（繁中版）沒有內建「VBM Default」預設，改用 AI 模式閃避，跟著 Wrath 一起開關
-        Log("BossMod AI 模式會跟著 Wrath 一起開關")
+        Log("BossMod AI 模式只在寶物庫內跟著 Wrath 一起開關，野外不開")
     elseif Cfg.BossModPreset ~= nil and Cfg.BossModPreset ~= "" then
         yield(bossCmd .. " ar set " .. Cfg.BossModPreset)
         Log("BossMod Reborn 預設：" .. Cfg.BossModPreset)

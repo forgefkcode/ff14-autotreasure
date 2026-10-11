@@ -106,12 +106,9 @@ configs:
   DoorAnimWait:
     default: 10
     description: 互動門之後等開門（或關門）動畫幾秒，動畫結束才走進去
-  PassageName:
-    default: ""
-    description: 門後傳送法陣的物件名稱（不能互動，只用來找位置；空白 = 穿過門往前走 PassageDistance）
   PassageDistance:
     default: 10
-    description: 沒填 PassageName 時，穿過門後再往前走多遠去踩傳送法陣
+    description: 穿過門後再往前走多遠去踩傳送法陣（法陣不能互動、沒有名稱，只能往前走）
   GambleMode:
     default: "Ignore"
     description: 強欲陷阱（大／小兩顆魔法球）的處理：Ignore（不互動，等它結束）/ Big（選大）/ Small（選小）
@@ -260,7 +257,6 @@ local Cfg = {
     DoorChoice       = Config.Get("DoorChoice"),
     DoorHintWait     = Config.Get("DoorHintWait"),
     DoorAnimWait     = Config.Get("DoorAnimWait"),
-    PassageName      = Config.Get("PassageName"),
     PassageDistance  = Config.Get("PassageDistance"),
     GambleMode       = Config.Get("GambleMode"),
     GambleBigName    = Config.Get("GambleBigName"),
@@ -1793,23 +1789,6 @@ function Api.TargetableObjects(name)
     return list
 end
 
--- 名稱相符的物件（不管能不能選取，例如不能互動的傳送法陣），回傳位置或 nil
-function Api.ObjectPosition(name)
-    if name == nil or name == "" then return nil end
-    local ok, pos = pcall(function()
-        local objs = Svc.Objects
-        for i = 0, objs.Length - 1 do
-            local o = objs[i]
-            if o ~= nil and o.Name.TextValue == name then
-                return Vector3(o.Position.X, o.Position.Y, o.Position.Z)
-            end
-        end
-        return nil
-    end)
-    if ok then return pos end
-    return nil
-end
-
 -- 選取指定物件，太遠就先走過去，到了再互動（同 ApproachAndInteract，但對象是已經挑好的物件）
 local function ApproachAndInteractObject(obj)
     if obj == nil or not pcall(function() Svc.Targets.Target = obj end) then return false end
@@ -1997,8 +1976,8 @@ function Handlers.DUNGEON_DOOR_WAIT()
     return "DUNGEON_PASSAGE"
 end
 
--- 走進門：目標是門後的傳送法陣（不能互動）。有 PassageName 就走到那個物件的位置；
--- 沒有就從選門前站的位置往門的方向，穿過門再往前 PassageDistance（每次沒傳送成功就再往前 4）。
+-- 走進門：門後有傳送法陣（不能互動、沒有名稱），踩上去會被傳到下一層。
+-- 從選門前站的位置往門的方向，穿過門再往前 PassageDistance（每次沒傳送成功就再往前 4）。
 -- 角色位置瞬間跳動超過 30（被傳送）就算到了下一層
 function Handlers.DUNGEON_PASSAGE()
     if not InDuty() then
@@ -2023,15 +2002,12 @@ function Handlers.DUNGEON_PASSAGE()
 
     if not Api.NavRunning() then
         State.passTries = (State.passTries or 0) + 1
-        local target = Api.ObjectPosition(Cfg.PassageName)
-        if target == nil then
-            local d, f = State.doorPos, State.doorFrom
-            local dx, dz = d.X - f.X, d.Z - f.Z
-            local len = math.max(math.sqrt(dx * dx + dz * dz), 0.01)
-            local dist = Cfg.PassageDistance + (State.passTries - 1) * 4
-            local x, z = d.X + dx / len * dist, d.Z + dz / len * dist
-            target = Api.PointOnFloor(x, z) or Vector3(x, d.Y, z)
-        end
+        local d, f = State.doorPos, State.doorFrom
+        local dx, dz = d.X - f.X, d.Z - f.Z
+        local len = math.max(math.sqrt(dx * dx + dz * dz), 0.01)
+        local dist = Cfg.PassageDistance + (State.passTries - 1) * 4
+        local x, z = d.X + dx / len * dist, d.Z + dz / len * dist
+        local target = Api.PointOnFloor(x, z) or Vector3(x, d.Y, z)
         if State.passTries == 1 then Log("走進門，前往傳送法陣") end
         Api.NavMoveTo(target, false)
     end

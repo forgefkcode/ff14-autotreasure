@@ -18,6 +18,7 @@ SND（Something Need Doing）Lua 腳本，戰士單人循環挖寶與寶物庫�
 
 - 市場板搜尋診斷：https://raw.githubusercontent.com/forgefkcode/ff14-autotreasure/main/tools/MarketSearchTest.lua
 - 喝藥測試：https://raw.githubusercontent.com/forgefkcode/ff14-autotreasure/main/tools/PotionTest.lua
+- 強欲陷阱診斷：https://raw.githubusercontent.com/forgefkcode/ff14-autotreasure/main/tools/GambleTest.lua
 
 ## 需求
 
@@ -52,7 +53,7 @@ G15 目前實測使用的組合（感謝兩位大神）：
 每一層：跑到寶箱 → 開寶箱打怪 → 開殘留寶箱、處理強欲陷阱 → 兩扇「寶物庫的門」選一扇 → 等開門動畫 → 走進門踩傳送法陣到下一層，共 5 層。
 
 - 出現「右側的門發光了！」或「左側的門發光了！」時只會剩一扇門可以互動，選那扇；沒有提示就等 `DoorHintWait` 秒後依 `DoorChoice` 隨機選
-- 門後的傳送法陣不能互動：有填 `PassageName` 就走到那個物件，沒有就穿過門再往前 `PassageDistance`；角色被傳送（位置瞬間跳動）就算到下一層
+- 門後的傳送法陣不能互動、沒有名稱：穿過門再往前 `PassageDistance`；角色被傳送（位置瞬間跳動）就算到下一層
 - 強欲陷阱（大／小魔法球）依 `GambleMode` 處理：`Ignore`（預設，不互動）/ `Big` / `Small`
 
 ## 使用前準備

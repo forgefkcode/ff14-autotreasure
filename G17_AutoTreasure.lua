@@ -2,11 +2,13 @@
 [[SND Metadata]]
 author: forgefk
 version: 0.1.0
-description: FF14 G17 自動挖寶（古舊的布拉克斯革地圖，Timeworn Br'aaxskin Map）+ 寶物庫 Cenote Ja Ja Gural（選門型）。由 G15 版改寫。
+description: FF14 G17 自動挖寶（陳舊的地圖G17，Timeworn Br'aaxskin Map，8 人圖）+ 寶物庫 Cenote Ja Ja Gural（選門型）。由 G15 版改寫，寶物庫流程與 G14 版相同。
 plugin_dependencies:
 - vnavmesh
-- WrathCombo
 - Lifestream
+function_chat_filters:
+  OnChatMessage:
+    message_regex: "將陷阱引來的魔物全部打倒了|門發光了|強欲陷阱發動了"
 configs:
   MapItemId:
     default: 43557
@@ -20,12 +22,12 @@ configs:
   AutoBuy:
     default: true
     description: 圖不夠時自動到市場板買圖（維持身上 1 張已解讀 + 1 張未解讀）。事前記得在市場板把要買的地圖加入「我的最愛」
+  RotationPlugin:
+    default: "Auto"
+    description: 自動輸出插件：Auto（有 RotationSolver Reborn 用 RSR，否則用 Wrath Combo）/ RotationSolver / WrathCombo
   BossModPlugin:
     default: "Auto"
-    description: 閃避用的插件：Auto（有 BossMod 用 BossMod，否則用 BossMod Reborn）/ BossMod / BossModReborn
-  BossModPreset:
-    default: "VBM Default"
-    description: 只用於 BossMod Reborn：啟動時 /bmr ar set 這個預設（打錯名稱 BMR 會強制停用，留空 = 不切換）；BossMod 改用 AI 模式，跟著 Wrath 一起開關
+    description: 閃避插件：Auto（有 BossMod 用 BossMod，否則用 BossMod Reborn）/ BossMod / BossModReborn。只開 AI 閃避，寶物庫戰鬥中才開
   CrossWorld:
     default: true
     description: 每輪開始前查 Universalis，傳送到資料中心內地圖最便宜的伺服器買圖並挖寶（需要 Lifestream）
@@ -68,9 +70,6 @@ configs:
   EnterDungeon:
     default: true
     description: 出現傳送門時是否進入寶物庫
-  DoorChoice:
-    default: "Random"
-    description: 寶物庫選門方式 Random / First（第一個找到的門）
   WalkRadius:
     default: 15
     description: 飛到離旗標多近就下坐騎改走路（飛行停點不準，近距離走路比較準）
@@ -83,57 +82,54 @@ configs:
   PortalWait:
     default: 10
     description: 開箱後等待傳送門出現的秒數
-  RouletteWait:
-    default: 45
-    description: 寶物庫戰鬥開始後最多等幾秒找敵人（G15 會先播 30 秒以上的輪盤動畫，怪物之後才出現）
+  EnemyWait:
+    default: 20
+    description: 寶物庫戰鬥開始後最多等幾秒找敵人（怪物出現前可能有動畫）
   EnemySearchRange:
     default: 100
     description: 寶物庫內找敵人的範圍（選最近的敵人、確認是否打完都用這個）
-  PotionHpPercent:
-    default: 40
-    description: HP 低於此百分比時喝藥（0 = 不喝）
-  PotionItemName:
-    default: ""
-    description: 回復藥物品名稱，要與遊戲內一字不差（空白 = 不喝）；背包有 HQ 會優先用 HQ
-  PotionRetries:
-    default: 5
-    description: 每次要喝藥時最多連續試幾次（Wrath 運作中可能卡掉喝藥），喝到才進入冷卻
-  PotionCooldown:
-    default: 60
-    description: 喝藥冷卻秒數（喝過之後至少隔這麼久才會再喝）
   UseSprint:
     default: false
     description: 移動時是否使用衝刺
   MaxErrors:
     default: 3
     description: 連續錯誤幾次後停止腳本
+  DoorName:
+    default: "寶物庫的門"
+    description: 寶物庫兩扇門的物件名稱（繁中客戶端）
+  DoorChoice:
+    default: "Random"
+    description: 沒有發光提示時怎麼選門：Random（隨機）/ First（第一個找到的）
+  DoorHintWait:
+    default: 5
+    description: 選門前等幾秒看有沒有「右側／左側的門發光了！」提示
+  DoorAnimWait:
+    default: 10
+    description: 互動門之後等開門（或關門）動畫幾秒，動畫結束才走進去
+  PassageDistance:
+    default: 10
+    description: 穿過門後再往前走多遠去踩傳送法陣（法陣不能互動、沒有名稱，只能往前走）
+  GambleMode:
+    default: "Ignore"
+    description: 強欲陷阱（大／小兩顆魔法球）的處理：Ignore（不互動，等它結束）/ Big（選大）/ Small（選小）
+  GambleBigName:
+    default: "大"
+    description: 強欲陷阱「大」魔法球的物件名稱
+  GambleSmallName:
+    default: "小"
+    description: 強欲陷阱「小」魔法球的物件名稱
   ChestName:
     default: "寶箱"
     description: 野外寶箱物件名稱（繁中客戶端）
   DungeonChestName:
     default: "寶箱"
     description: 寶物庫寶箱物件名稱（空白 = 同 ChestName）
-  DoorName:
-    default: ""
-    description: 寶物庫門的物件名稱（待填，兩扇門通常同名）
   PortalName:
     default: "傳送魔紋"
     description: 傳送門物件名稱（繁中客戶端）
-  AetheryteUrqopacha:
-    default: ""
-    description: Urqopacha 的以太之光名稱（留空 = 自動從遊戲資料取）
-  AetheryteKozamauka:
-    default: ""
-    description: Kozama'uka 的以太之光名稱（留空 = 自動從遊戲資料取）
-  AetheryteYakTel:
-    default: ""
-    description: Yak T'el 的以太之光名稱（留空 = 自動從遊戲資料取）
-  AetheryteShaaloani:
-    default: ""
-    description: Shaaloani 的以太之光名稱（留空 = 自動從遊戲資料取）
-  AetheryteHeritageFound:
-    default: ""
-    description: Heritage Found 的以太之光名稱（留空 = 自動從遊戲資料取）
+  ExitPortalName:
+    default: "傳送魔紋"
+    description: 寶物庫第 5 關後離開用的傳送門物件名稱
   EchoLogs:
     default: "All"
     description: 日誌層級 All / Errors / None
@@ -143,17 +139,11 @@ configs:
 import("System.Numerics")
 
 --[[
-與 G15 版的差異
-  - 藏寶點分布在黃金版 5 個地區（Living Memory 除外），TRAVEL 依旗標所在地區傳送
-  - 寶物庫 Cenote Ja Ja Gural 是選門型：每關開寶箱 → 打怪 → 領獎拿鑰匙 → 兩扇門選一扇，
-    選錯會被移出副本；最多 5 關，第 5 關是 Boss（Bull Apollyon 或 Golden Molter）
-  - G17 是 8 人圖，單刷野外陷阱與寶物庫的難度沒有實測來源
-
 結構
   1. 常數與設定
-  2. Api 轉接層：所有待確認的遊戲／插件呼叫都集中在這裡，實測後只改這一層
-  3. 工具函式
-  4. 狀態處理函式（主流程 + 寶物庫子流程）
+  2. Api 轉接層：所有「待確認事項」的遊戲／插件呼叫都集中在這裡，實測後只改這一層
+  3. 工具函式（日誌、計時、移動、互動、戰鬥）
+  4. 狀態處理函式（主流程 + 寶物庫子流程），每個回傳下一個狀態
   5. 主迴圈
 ]]
 
@@ -161,18 +151,12 @@ import("System.Numerics")
 -- 1. 常數與設定
 -------------------------------------------------------------------------------
 
-local WARRIOR_JOB_ID = 21
+local WARRIOR_JOB_ID   = 21
 -- 寶物庫（Cenote Ja Ja Gural）的地區 ID，取自 XIVAPI ContentFinderCondition
 local VAULT_TERRITORY = 1209
 
--- 黃金版地區 territory ID（TODO 待確認）→ 對應的傳送設定
-local G17_ZONES = {
-    [1187] = { name = "Urqopacha",      aetheryteKey = "AetheryteUrqopacha" },
-    [1188] = { name = "Kozama'uka",     aetheryteKey = "AetheryteKozamauka" },
-    [1189] = { name = "Yak T'el",       aetheryteKey = "AetheryteYakTel" },
-    [1190] = { name = "Shaaloani",      aetheryteKey = "AetheryteShaaloani" },
-    [1191] = { name = "Heritage Found", aetheryteKey = "AetheryteHeritageFound" },
-}
+-- G17 的藏寶地區：黃金版 5 區（Urqopacha、Kozama'uka、Yak T'el、Shaaloani、Heritage Found；Living Memory 沒有）
+local G17_ZONES = { [1187] = true, [1188] = true, [1189] = true, [1190] = true, [1191] = true }
 
 -- 一般動作 ID（GeneralAction 表，取自 XIVAPI），用 ID 執行不受客戶端語系影響
 local GA = {
@@ -183,7 +167,7 @@ local GA = {
     dismount      = 23,
 }
 
--- G17 的 40 個（5 個地區各 8 個）藏寶點的真正座標（含高度），取自 XIVAPI TreasureSpot（TreasureHuntRank 28）→ Level。
+-- G17 的 40 個藏寶點（5 個地區各 8 個）的真正座標（含高度），取自 XIVAPI TreasureSpot（TreasureHuntRank 28）→ Level。
 -- 格式：{ 地區 ID, X, Y（高度）, Z }
 local TREASURE_SPOTS = {
     { 1190, -163.11, 16.42, -19.52 },
@@ -240,49 +224,82 @@ local Cond = {
     flying          = 77,
 }
 
-local Cfg = {}
-for _, k in ipairs({
-    "MapItemId", "MaxRounds", "MaxMaps", "EnterDungeon", "DecipheredItemId", "FlagWait", "AutoBuy",
-    "BossModPlugin", "BossModPreset", "CrossWorld", "DataCenter", "MaxMapPrice", "GilFloor", "MarketTerritoryId", "MarketAetheryte", "MarketX", "MarketY", "MarketZ",
-    "FavoritesCallback", "MarketBoardName", "DoorChoice", "WalkRadius", "DigRadius", "LeashRadius", "PortalWait",
-    "RouletteWait", "EnemySearchRange", "PotionHpPercent", "PotionItemName", "PotionRetries", "PotionCooldown", "UseSprint", "MaxErrors", "ChestName", "DungeonChestName",
-    "DoorName", "PortalName", "AetheryteUrqopacha", "AetheryteKozamauka", "AetheryteYakTel",
-    "AetheryteShaaloani", "AetheryteHeritageFound", "EchoLogs",
-}) do
-    Cfg[k] = Config.Get(k)
-end
+local Cfg = {
+    MapItemId        = Config.Get("MapItemId"),
+    MaxRounds        = Config.Get("MaxRounds"),
+    MaxMaps          = Config.Get("MaxMaps"),
+    EnterDungeon     = Config.Get("EnterDungeon"),
+    DecipheredItemId = Config.Get("DecipheredItemId"),
+    FlagWait   = Config.Get("FlagWait"),
+    AutoBuy          = Config.Get("AutoBuy"),
+    RotationPlugin   = Config.Get("RotationPlugin"),
+    BossModPlugin    = Config.Get("BossModPlugin"),
+    CrossWorld       = Config.Get("CrossWorld"),
+    DataCenter       = Config.Get("DataCenter"),
+    MaxMapPrice      = Config.Get("MaxMapPrice"),
+    GilFloor         = Config.Get("GilFloor"),
+    MarketTerritoryId = Config.Get("MarketTerritoryId"),
+    MarketAetheryte  = Config.Get("MarketAetheryte"),
+    MarketX          = Config.Get("MarketX"),
+    MarketY          = Config.Get("MarketY"),
+    MarketZ          = Config.Get("MarketZ"),
+    FavoritesCallback = Config.Get("FavoritesCallback"),
+    MarketBoardName  = Config.Get("MarketBoardName"),
+    WalkRadius       = Config.Get("WalkRadius"),
+    DigRadius        = Config.Get("DigRadius"),
+    LeashRadius      = Config.Get("LeashRadius"),
+    PortalWait       = Config.Get("PortalWait"),
+    EnemyWait        = Config.Get("EnemyWait"),
+    EnemySearchRange = Config.Get("EnemySearchRange"),
+    UseSprint        = Config.Get("UseSprint"),
+    MaxErrors        = Config.Get("MaxErrors"),
+    DoorName         = Config.Get("DoorName"),
+    DoorChoice       = Config.Get("DoorChoice"),
+    DoorHintWait     = Config.Get("DoorHintWait"),
+    DoorAnimWait     = Config.Get("DoorAnimWait"),
+    PassageDistance  = Config.Get("PassageDistance"),
+    GambleMode       = Config.Get("GambleMode"),
+    GambleBigName    = Config.Get("GambleBigName"),
+    GambleSmallName  = Config.Get("GambleSmallName"),
+    ChestName        = Config.Get("ChestName"),
+    DungeonChestName = Config.Get("DungeonChestName"),
+    PortalName       = Config.Get("PortalName"),
+    ExitPortalName   = Config.Get("ExitPortalName"),
+    EchoLogs         = Config.Get("EchoLogs"),
+}
 if Cfg.DungeonChestName == nil or Cfg.DungeonChestName == "" then
     Cfg.DungeonChestName = Cfg.ChestName
 end
 
 -- 各狀態逾時（秒），建議初值，實測後調整
 local Timeout = {
-    CHECK_MAP       = 3,
-    DECIPHER        = 10,
-    LOCATE          = Cfg.FlagWait,
-    TRAVEL          = 240,
-    DIG             = 8,
-    OPEN_COFFER     = 15,
-    FIELD_COMBAT    = 600,
+    CHECK_MAP        = 3,
+    DECIPHER         = 10,
+    LOCATE           = Cfg.FlagWait,
+    TRAVEL           = 180,
+    DIG              = 8,
+    OPEN_COFFER      = 15,
+    FIELD_COMBAT     = 600,   -- 遊戲戰鬥時限未知，先給寬鬆上限
     FIELD_FIGHT      = 600,
-    LOOT            = 10,
-    PORTAL_CHECK    = Cfg.PortalWait,
-    ENTER_DUNGEON   = 60,
-    DEAD            = 120,
+    LOOT             = 10,
+    PORTAL_CHECK     = Cfg.PortalWait,
+    ENTER_DUNGEON    = 60,
+    DEAD             = 120,
     WORLD_TRAVEL     = 300,
-    MB_TRAVEL       = 120,
-    MB_OPEN         = 15,
-    MB_SEARCH       = 180,   -- 含等待手動搜尋的時間
-    MB_LIST         = 15,
-    MB_BUY          = 15,
+    MB_TRAVEL        = 120,
+    MB_OPEN          = 15,
+    MB_SEARCH        = 180,   -- 含等待手動搜尋的時間
+    MB_LIST          = 15,
+    MB_BUY           = 15,
     MB_CLOSE        = 10,
-    DUNGEON_INIT    = 30,
-    DUNGEON_CHEST   = 20,
-    DUNGEON_COMBAT  = 3600,  -- 副本限時 60 分鐘
-    DUNGEON_LOOT    = 120,
-    DUNGEON_DOOR    = 30,
-    DUNGEON_PASSAGE = 30,
-    DUNGEON_EXIT    = 90,
+    DUNGEON_INIT     = 30,
+    DUNGEON_COMBAT   = 3600,  -- 副本限時 60 分鐘
+    DUNGEON_CHEST    = 120,   -- 含跑到寶箱的時間
+    DUNGEON_LOOT     = 180,   -- 含強欲陷阱
+    DUNGEON_DOOR     = 60,
+    DUNGEON_DOOR_WAIT = 60,
+    DUNGEON_PASSAGE  = 60,
+    DUNGEON_EXIT     = 180,
 }
 
 local DECIPHER_RETRIES = 2
@@ -293,7 +310,7 @@ local STUCK_DISTANCE   = 1
 local MAX_STAGES       = 5
 
 -------------------------------------------------------------------------------
--- 2. Api 轉接層（SND v2 API；標 TODO 者待實測修正）
+-- 2. Api 轉接層（SND v2 API；標 TODO 者為「待確認事項」，實測後修正）
 -------------------------------------------------------------------------------
 
 -- 先宣告 Log / LogError（定義在第 3 段），Api 的函式也要用得到
@@ -354,8 +371,14 @@ function Api.FlagTerritory()
     return Instances.Map.Flag.TerritoryId
 end
 
+-- 旗標的世界座標；Y（高度）由 vnavmesh 自行處理
 function Api.FlagPos()
     return Instances.Map.Flag.Vector3
+end
+
+-- TODO 待確認：地圖座標 → 旗標的 API 名稱與參數
+function Api.SetFlag(territory, mapX, mapY)
+    Instances.Map.Flag:SetFlagMapMarker(territory, mapX, mapY)
 end
 
 -- 名稱相符且可選取的最近物件（Dalamud 物件）。Entity.GetEntityByName 只回傳第一個同名物件、
@@ -388,19 +411,6 @@ function Api.GetEntity(name)
     return Api.NearestTargetable(name)
 end
 
--- TODO 待確認：列舉同名物件的方式（門有兩扇且同名）
-function Api.GetEntities(name)
-    local list = {}
-    if name == nil or name == "" then return list end
-    for i = 0, Svc.Objects.Length - 1 do
-        local o = Svc.Objects[i]
-        if o ~= nil and o.Name ~= nil and o.Name.TextValue == name then
-            table.insert(list, o)
-        end
-    end
-    return list
-end
-
 -- 選取最近、可互動的同名物件
 function Api.Target(name)
     local o = Api.NearestTargetable(name)
@@ -408,11 +418,6 @@ function Api.Target(name)
     local ok = pcall(function() Svc.Targets.Target = o end)
     if not ok then pcall(function() o:SetAsTarget() end) end
     return true
-end
-
--- TODO 待確認：以 Dalamud 物件設為目標的方式
-function Api.TargetObject(obj)
-    Svc.Targets.Target = obj
 end
 
 function Api.InteractTarget()
@@ -659,29 +664,6 @@ function Api.AnyEnemyLeft(maxDistance)
     return false
 end
 
--- 在背包 4 頁裡找名稱相符的物品，回傳 (物品 ID, 是否有 HQ)；找不到回 nil
-function Api.FindInventoryItem(name)
-    local foundId, hasHq = nil, false
-    local ok = pcall(function()
-        for _, container in ipairs({ InventoryType.Inventory1, InventoryType.Inventory2,
-                                     InventoryType.Inventory3, InventoryType.Inventory4 }) do
-            local items = Inventory.GetInventoryContainer(container).Items
-            for i = 0, items.Count - 1 do
-                local it = items[i]
-                if it ~= nil and not it.IsEmpty then
-                    local id = it.BaseItemId
-                    if id == foundId or tostring(Excel.GetRow("Item", id).Name) == name then
-                        foundId = id
-                        if it.IsHighQuality then hasHq = true end
-                    end
-                end
-            end
-        end
-    end)
-    if not ok then return nil end
-    return foundId, hasHq
-end
-
 function Api.GeneralAction(id)
     Actions.ExecuteGeneralAction(id)
 end
@@ -698,36 +680,34 @@ function Api.LifestreamBusy()
     return ok and busy == true
 end
 
--- 開關 Wrath 時同步記錄狀態，CombatTick / TRAVEL 依 State.wrathOn 判斷要不要再開。
--- 用 BossMod（/vbm）時，AI 模式只在寶物庫內跟著 Wrath 一起開關（野外不開）
+-- 開關自動輸出（RSR 或 Wrath，依 State.rotation）時同步記錄狀態，CombatTick / TRAVEL 依 State.wrathOn 判斷要不要再開。
+-- 閃避 AI（BMR：/bmrai，BossMod：/vbm ai）只在寶物庫內跟著一起開：野外開 AI 會跟「離寶箱太遠就走回去」互相拉扯
+local function BossAiCmd(on)
+    if State.bossCmd == "/bmr" then return on and "/bmrai on" or "/bmrai off" end
+    if State.bossCmd == "/vbm" then return on and "/vbm ai on" or "/vbm ai off" end
+    return nil
+end
+
 function Api.WrathOn()
-    yield("/wrath auto on")
-    -- BossMod AI 只在寶物庫內開：野外開 AI 會跟「離寶箱太遠就走回去」互相拉扯
-    if State.bossCmd == "/vbm" and Api.Territory() == VAULT_TERRITORY then
-        yield("/vbm ai on")
+    yield(State.rotation == "RotationSolver" and "/rotation Auto" or "/wrath auto on")
+    local aiCmd = BossAiCmd(true)
+    if aiCmd ~= nil and Api.Territory() == VAULT_TERRITORY then
+        yield(aiCmd)
         State.vbmAiOn = true
     end
     State.wrathOn = true
 end
 
 function Api.WrathOff()
-    yield("/wrath auto off")
+    yield(State.rotation == "RotationSolver" and "/rotation Off" or "/wrath auto off")
     if State.vbmAiOn then
-        yield("/vbm ai off")
+        local aiCmd = BossAiCmd(false)
+        if aiCmd ~= nil then yield(aiCmd) end
         State.vbmAiOn = false
     end
     State.wrathOn = false
 end
 
--- 每個地區傳到設定的以太之光（不一定是離藏寶點最近的那個）
-function Api.TeleportToZone(territory)
-    local zone = G17_ZONES[territory]
-    if zone == nil then return false end
-    local dest = Api.ResolveAetheryte(Cfg[zone.aetheryteKey], territory)
-    if dest == nil then return false end
-    Api.Teleport(dest)
-    return true
-end
 
 -- 解讀視窗是 SelectIconString（標題「解讀」）。依名稱在清單裡找這張地圖的位置，
 -- 節點路徑取自社群腳本 Narrr13/snd OpenMap.lua。讀不到清單文字時退回第 1 項
@@ -752,7 +732,7 @@ function Api.ConfirmYes()
     return false
 end
 
--- 強欲之罠（Gambler's Lure，高低猜）：一律放棄。TODO 待確認 addon 名稱與「放棄」的 callback 參數
+-- 強欲之罠（高低猜）：一律放棄。TODO 待確認 addon 名稱與「放棄」的 callback 參數
 local GAMBLE_ADDON = "SelectYesno"
 function Api.DeclineGamble()
     if Api.AddonReady(GAMBLE_ADDON) then
@@ -760,11 +740,6 @@ function Api.DeclineGamble()
         return true
     end
     return false
-end
-
--- TODO 待確認：通關第 5 關後離開副本的方式
-function Api.LeaveDuty()
-    InstancedContent.LeaveCurrentContent()
 end
 
 -- 市場板操作：callback 參數取自社群 SND 腳本（ShamelessEnd/SomethingNeedScripts），
@@ -866,7 +841,8 @@ function Api.ProbeDecipheredMap()
     return Api.HasDecipheredMap()
 end
 
--- 手動中止：目前在 SND 介面按停止即可（直接終止，不跑 END 統計）
+-- 使用者手動中止：目前在 SND 介面按停止即可（會直接終止腳本，不跑 END 統計）。
+-- TODO 若要軟停止（先收乾淨再結束），需找到 SND 可讀取的外部訊號後在這裡設定 State.stopRequested
 function Api.StopRequested()
     return State.stopRequested
 end
@@ -932,6 +908,7 @@ local function StopAutomation()
     Api.NavStop()
 end
 
+-- 移動中卡住偵測：10 秒位移 < 1 → 重新尋路一次；再卡 → 回傳 "stuck"
 local function CheckStuck(repath)
     local now, pos = os.clock(), Api.PlayerPos()
     if State.lastPos == nil then
@@ -975,11 +952,11 @@ function Api.ResolveAetheryte(configured, territoryId)
     return Api.AetheryteName(territoryId)
 end
 
--- 已選好目標時走過去並互動；回傳 true 表示已送出互動
-local function ApproachAndInteractTarget()
+-- 選取並走到物件旁互動；回傳 true 表示已送出互動
+local function ApproachAndInteract(name)
+    if not Api.Target(name) then return false end
     local t = Entity.Target
-    if t == nil then return false end
-    if t.DistanceTo ~= nil and t.DistanceTo > 3 then
+    if t ~= nil and t.DistanceTo ~= nil and t.DistanceTo > 3 then
         if not Api.NavRunning() then yield("/vnav movetarget") end
         return false
     end
@@ -989,11 +966,6 @@ local function ApproachAndInteractTarget()
     if not Dismount() then return false end   -- 騎著坐騎不能互動
     Api.InteractTarget()
     return true
-end
-
-local function ApproachAndInteract(name)
-    if not Api.Target(name) then return false end
-    return ApproachAndInteractTarget()
 end
 
 local MARKET_ADDONS = { "ItemHistory", "ItemSearchResult", "ItemSearch" }
@@ -1017,99 +989,6 @@ local function CloseMarket()
     end
 end
 
--- 喝藥：HP 低於 PotionHpPercent 且距離上次超過 PotionCooldown 秒時，從背包找藥水直接使用（有 HQ 優先用 HQ）。
--- 先掃背包確認有這瓶藥，再直接呼叫遊戲的使用道具（有 HQ 優先用 HQ）
-local function MaybeDrinkPotion()
-    if Cfg.PotionHpPercent <= 0 or Cfg.PotionItemName == "" then return end
-    if Api.HpPercent() >= Cfg.PotionHpPercent then return end
-    -- 冷卻中（只有喝成功才會進入冷卻），或上一輪全部失敗後的 2 秒等待中
-    if os.clock() - (State.lastPotionAt or -1e9) < Cfg.PotionCooldown then return end
-    if os.clock() < (State.potionRetryAt or 0) then return end
-    local id, hq = Api.FindInventoryItem(Cfg.PotionItemName)
-    if id == nil then
-        if not State.potionWarned then
-            Log("背包裡找不到「" .. Cfg.PotionItemName .. "」，無法喝藥")
-            State.potionWarned = true
-        end
-        State.lastPotionAt = os.clock()   -- 沒有藥水：等一個冷卻再找，不要一直掃背包
-        return
-    end
-    -- 直接呼叫遊戲的使用道具：Actions.ExecuteAction(物品 ID, ActionType.Item)，HQ 的 ID 要加 1000000。
-    -- 只能傳 SND 提供的列舉值 ActionType.Item：傳數字或字串給列舉參數會在 Lua 外丟出 .NET 例外，
-    -- pcall 攔不到，SND 會顯示 Unknown error 並直接停掉腳本。
-    -- 不用 /item：在 Lua 腳本裡它會被當成遊戲聊天指令送出，繁中版沒有這個指令
-    if ActionType == nil or ActionType.Item == nil then
-        if not State.potionWarned then
-            Log("讀不到 ActionType.Item，無法喝藥")
-            State.potionWarned = true
-        end
-        return
-    end
-    -- Wrath 自動循環運作時可能會卡掉喝藥：連續重試 PotionRetries 次，每次 0.5 秒後看藥水有沒有少；
-    -- 喝到就進入冷卻，全部失敗則 2 秒後（HP 還低的話）再來一輪
-    local actionId = hq and (id + 1000000) or id
-    local function Count() return Inventory.GetItemCount(id) + Inventory.GetHqItemCount(id) end
-    local before = Count()
-    local lastErr = nil
-    for attempt = 1, Cfg.PotionRetries do
-        local ok, err = pcall(function() Actions.ExecuteAction(actionId, ActionType.Item) end)
-        if not ok then lastErr = err end
-        yield("/wait 0.5")
-        if Count() < before then
-            State.lastPotionAt = os.clock()
-            Log("喝藥：" .. Cfg.PotionItemName .. (hq and "（HQ）" or "") .. "（第 " .. attempt .. " 次成功）")
-            return
-        end
-    end
-    State.potionRetryAt = os.clock() + 2
-    Log("喝藥失敗（試了 " .. Cfg.PotionRetries .. " 次）" .. (lastErr and ("：" .. tostring(lastErr)) or "") .. "，2 秒後再試")
-end
-
--- 戰鬥中：解除對寶箱的選取（選著寶箱 Wrath 不會自動選怪），交給 Wrath 打；
--- 戰鬥結束後由 LOOT / DUNGEON_LOOT 重新選寶箱互動
--- 野外戰鬥不要離寶箱太遠（太遠陷阱戰鬥會被重置）：離觸發陷阱的位置超過 LeashRadius 就走回去
-local function StayNearCoffer()
-    local anchor = State.cofferPos
-    if anchor == nil or InDuty() then return end
-    if Distance2D(Api.PlayerPos(), anchor) <= Cfg.LeashRadius then
-        if State.leashing then
-            Api.NavStop()
-            State.leashing = false
-        end
-        return
-    end
-    if not Api.NavRunning() then
-        if not State.leashing and os.clock() - (State.leashLogAt or -100) > 10 then
-            Log("離寶箱太遠，走回去")
-            State.leashLogAt = os.clock()
-        end
-        Api.NavMoveTo(Api.PointOnFloor(anchor.X, anchor.Z) or anchor, false)
-        State.leashing = true
-    end
-end
-
-local function CombatTick()
-    local t = Entity.Target
-    if t ~= nil and (t.Name == Cfg.ChestName or t.Name == Cfg.DungeonChestName) then
-        Api.ClearTarget()
-    end
-    -- 戰鬥開始時選一次最近的敵人，之後交給 Wrath，不保持鎖定
-    if not State.combatTargeted then
-        Api.EngageNearestEnemy(InDuty() and Cfg.EnemySearchRange or 30)
-        State.combatTargeted = true
-    end
-    if not State.wrathOn then
-        Api.NavStop()
-        Api.WrathOn()
-    end
-    MaybeDrinkPotion()
-end
-
-local function LeaveCombat()
-    Api.WrathOff()
-    State.wrathOn = false
-end
-
 -------------------------------------------------------------------------------
 -- 4. 狀態處理函式
 -------------------------------------------------------------------------------
@@ -1122,11 +1001,29 @@ local function EnsureWrathOff()
     end
 end
 
+-- 聊天訊息觸發（開頭 function_chat_filters 限制只有這幾種訊息才會呼叫；函式只設旗標，不做別的事）：
+--   「將陷阱引來的魔物全部打倒了！」→ 野外陷阱打完，去開寶箱
+--   「右側的門發光了！」「左側的門發光了！」→ 寶物庫裡只會剩一扇門可以互動，選那扇
+--   「強欲陷阱發動了！」→ 出現大／小兩顆魔法球，依 GambleMode 處理
+function OnChatMessage()
+    local ok, msg = pcall(function() return tostring(TriggerData.message) end)
+    if not ok or msg == nil then return end
+    if msg:find("將陷阱引來的魔物全部打倒了", 1, true) then
+        State.fieldCleared = true
+    elseif msg:find("右側的門發光了", 1, true) then
+        State.doorHint = "右側"
+    elseif msg:find("左側的門發光了", 1, true) then
+        State.doorHint = "左側"
+    elseif msg:find("強欲陷阱發動了", 1, true) then
+        State.gambleActive = true
+    end
+end
+
 local Handlers = {}
 
 function Handlers.INIT()
     local missing = {}
-    for _, p in ipairs({ "vnavmesh", "WrathCombo", "Lifestream" }) do
+    for _, p in ipairs({ "vnavmesh", "Lifestream" }) do
         if not Api.PluginInstalled(p) then table.insert(missing, p) end
     end
     if #missing > 0 then
@@ -1145,7 +1042,23 @@ function Handlers.INIT()
             return "END"
         end
     end
-    -- 閃避插件：BossMod（/vbm）或 BossMod Reborn（/bmr），兩個指令格式相同
+    -- 自動輸出插件：RotationSolver Reborn（/rotation Auto|Off）或 Wrath Combo（/wrath auto on|off）
+    local hasRsr, hasWrath = Api.PluginInstalled("RotationSolver"), Api.PluginInstalled("WrathCombo")
+    local rotChoice = Cfg.RotationPlugin or "Auto"
+    local rotation = nil
+    if rotChoice == "RotationSolver" or (rotChoice == "Auto" and hasRsr) then
+        rotation = hasRsr and "RotationSolver" or nil
+    elseif rotChoice == "WrathCombo" or (rotChoice == "Auto" and hasWrath) then
+        rotation = hasWrath and "WrathCombo" or nil
+    end
+    if rotation == nil then
+        LogError("沒有偵測到啟用中的 RotationSolver Reborn / Wrath Combo（設定：" .. rotChoice .. "）")
+        return "END"
+    end
+    if hasRsr and hasWrath then Log("提醒：RotationSolver 和 Wrath Combo 同時啟用，兩個會搶著放技能，建議只開一個") end
+    State.rotation = rotation
+
+    -- 閃避插件：BossMod（/vbm ai on|off）或 BossMod Reborn（/bmrai on|off），只用 AI 閃避、寶物庫戰鬥中才開
     local hasVbm, hasBmr = Api.PluginInstalled("BossMod"), Api.PluginInstalled("BossModReborn")
     local choice = Cfg.BossModPlugin or "Auto"
     local bossCmd = nil
@@ -1155,18 +1068,15 @@ function Handlers.INIT()
         bossCmd = hasBmr and "/bmr" or nil
     end
     if bossCmd == nil then
-        LogError("沒有偵測到啟用中的 BossMod / BossMod Reborn（設定：" .. choice .. "）")
+        LogError("沒有偵測到啟用中的 BossMod Reborn / BossMod（設定：" .. choice .. "）")
         return "END"
     end
     if hasVbm and hasBmr then Log("提醒：BossMod 和 BossMod Reborn 同時啟用，兩個會搶著閃避，建議只開一個") end
     State.bossCmd = bossCmd
-    if bossCmd == "/vbm" then
-        -- BossMod（繁中版）沒有內建「VBM Default」預設，改用 AI 模式閃避，跟著 Wrath 一起開關
-        Log("BossMod AI 模式只在寶物庫內跟著 Wrath 一起開關，野外不開")
-    elseif Cfg.BossModPreset ~= nil and Cfg.BossModPreset ~= "" then
-        yield(bossCmd .. " ar set " .. Cfg.BossModPreset)
-        Log("BossMod Reborn 預設：" .. Cfg.BossModPreset)
-    end
+    -- 清掉 BossMod / BMR 自己的自動輸出預設，避免跟 RSR / Wrath 搶著放技能；它們只負責 AI 閃避
+    yield(bossCmd .. " ar clear")
+    Log("輸出：" .. (rotation == "RotationSolver" and "RotationSolver Reborn" or "Wrath Combo")
+        .. "；閃避：" .. (bossCmd == "/bmr" and "BossMod Reborn" or "BossMod") .. " AI（只在寶物庫戰鬥中開）")
     if Cfg.MapItemId == 0 then
         LogError("未設定 MapItemId")
         return "END"
@@ -1297,9 +1207,8 @@ local function FlagIsFresh()
 end
 
 function Handlers.LOCATE()
-    if FlagIsFresh() and G17_ZONES[Api.FlagTerritory()] ~= nil then
+    if FlagIsFresh() and G17_ZONES[Api.FlagTerritory()] then
         Api.CloseAddon("AreaMap")
-        Log("藏寶點在 " .. G17_ZONES[Api.FlagTerritory()].name)
         return "TRAVEL"
     end
     if not State.sent then
@@ -1354,10 +1263,13 @@ end
 function Handlers.TRAVEL()
     if Busy() then return nil end
 
+    -- 旗標在哪個地區就傳送到那個地區的大水晶（名稱從遊戲資料取）
     local target = Api.FlagTerritory()
     if Api.Territory() ~= target then
         if not State.teleportSent then
-            if not Api.TeleportToZone(target) then return "ERROR" end
+            local dest = Api.ResolveAetheryte("", target)
+            if dest == nil then return "ERROR" end
+            Api.Teleport(dest)
             State.teleportSent = true
         end
         return nil
@@ -1368,7 +1280,7 @@ function Handlers.TRAVEL()
     if not State.wrathOn then
         Api.WrathOn()
         State.wrathOn = true
-        Log("已到藏寶地區，開啟 Wrath")
+        Log("已到藏寶地區，開啟自動輸出")
     end
 
     -- 到達判斷用藏寶點真正座標（對不到才用旗標）
@@ -1455,33 +1367,77 @@ function Handlers.OPEN_COFFER()
     if TimedOut("OPEN_COFFER") then return "ERROR" end
 end
 
--- 野外戰鬥結束：脫離戰鬥滿 3 秒、且 30 內找不到敵人就算打完，去開寶箱並接著找傳送魔紋。
--- 不用聊天訊息觸發（OnChatMessage）：SND 會在主腳本同一個 Lua 環境裡插隊執行它，
--- 每行聊天都觸發，會讓 SND 出現「Unknown error」並直接停掉腳本。
--- 打完後又被旁邊的怪纏上，由 FIELD_FIGHT 先打完再回來
+-- 戰鬥中：解除對寶箱的選取（選著寶箱 Wrath 不會自動選怪），交給 Wrath 打；
+-- 戰鬥結束後由 LOOT / DUNGEON_LOOT 重新選寶箱互動
+-- 野外戰鬥不要離寶箱太遠（太遠陷阱戰鬥會被重置）：離觸發陷阱的位置超過 LeashRadius 就走回去
+local function StayNearCoffer()
+    local anchor = State.cofferPos
+    if anchor == nil or InDuty() then return end
+    if Distance2D(Api.PlayerPos(), anchor) <= Cfg.LeashRadius then
+        if State.leashing then
+            Api.NavStop()
+            State.leashing = false
+        end
+        return
+    end
+    if not Api.NavRunning() then
+        if not State.leashing and os.clock() - (State.leashLogAt or -100) > 10 then
+            Log("離寶箱太遠，走回去")
+            State.leashLogAt = os.clock()
+        end
+        Api.NavMoveTo(Api.PointOnFloor(anchor.X, anchor.Z) or anchor, false)
+        State.leashing = true
+    end
+end
+
+local function CombatTick()
+    local t = Entity.Target
+    if t ~= nil and (t.Name == Cfg.ChestName or t.Name == Cfg.DungeonChestName) then
+        Api.ClearTarget()
+    end
+    -- 寶物庫戰鬥開始時選一次最近的敵人，之後交給 RSR / Wrath，不保持鎖定；野外不索敵，選目標全交給 RSR / Wrath
+    if InDuty() and not State.combatTargeted then
+        Api.EngageNearestEnemy(Cfg.EnemySearchRange)
+        State.combatTargeted = true
+    end
+    if not State.wrathOn then
+        Api.NavStop()
+        Api.WrathOn()
+    end
+    -- 喝藥交給 RSR（它有自動吃藥），腳本不處理
+end
+
+local function LeaveCombat()
+    Api.WrathOff()
+    State.wrathOn = false
+end
+
+-- 野外戰鬥結束：聊天出現「將陷阱引來的魔物全部打倒了！」（OnChatMessage 標記）就去開寶箱。
+-- 野外不主動找敵人，選目標交給 RSR / Wrath。打完又被旁邊的怪纏上，由 FIELD_FIGHT 先打完再回來。
+-- 保險：萬一沒收到訊息，脫離戰鬥滿 10 秒也算結束（同樣不索敵）
+local function FieldCombatDone(reason)
+    State.fieldCleared = false
+    Log(reason)
+    LeaveCombat()
+    Api.ClearTarget()
+    if Api.GetEntity(Cfg.ChestName) == nil and Api.GetEntity(Cfg.PortalName) == nil then
+        Log("寶箱已消失（可能超過戰鬥時限）")
+        return "CHECK_MAP"
+    end
+    return "LOOT"
+end
+
 function Handlers.FIELD_COMBAT()
     if Api.Condition(Cond.dead) then LeaveCombat(); return "DEAD" end
+    if State.fieldCleared then return FieldCombatDone("陷阱魔物全部打倒，去開寶箱") end
     if Api.Condition(Cond.inCombat) then
         State.lastInCombat = Elapsed()
         StayNearCoffer()
         CombatTick()
         return nil
     end
-    if Elapsed() - (State.lastInCombat or 0) < 3 then return nil end
-    if Api.AnyEnemyLeft(30) then
-        State.lastInCombat = Elapsed()
-        CombatTick()
-        return nil
-    end
-    Log("陷阱魔物打完了，去開寶箱")
-    LeaveCombat()
-    Api.ClearTarget()
-    yield("/wait 3")
-    if Api.GetEntity(Cfg.ChestName) == nil and Api.GetEntity(Cfg.PortalName) == nil then
-        Log("寶箱已消失（可能超過戰鬥時限）")
-        return "CHECK_MAP"
-    end
-    return "LOOT"
+    if Elapsed() - (State.lastInCombat or 0) < 10 then return nil end
+    return FieldCombatDone("脫離戰鬥 10 秒（沒收到打倒訊息），去開寶箱")
 end
 
 -- 領獎：可能有多個寶箱，還有可互動的寶箱就一個一個開，全部開完才看有沒有傳送魔紋
@@ -1533,6 +1489,7 @@ function Handlers.DEAD()
         Log("已復活")
         return "CHECK_MAP"
     end
+    -- 接受復活或返回：返回對話框也是 SelectYesno
     Api.ConfirmYes()
     if TimedOut("DEAD") then return "ERROR" end
 end
@@ -1806,10 +1763,47 @@ function Handlers.MB_FAIL()
     return "END"
 end
 
----------------------------------------------------------------- 寶物庫子流程（選門型）
--- 每關：DUNGEON_CHEST（開箱觸發陷阱）→ DUNGEON_COMBAT → DUNGEON_LOOT（領獎、拿鑰匙）
---       → 第 1–4 關：DUNGEON_DOOR（選門）→ DUNGEON_PASSAGE（判斷過門或被踢）→ 下一關
---       → 第 5 關：DUNGEON_EXIT
+---------------------------------------------------------------- 寶物庫子流程（驚奇百寶城，選門型）
+-- 每一層：
+--   DUNGEON_CHEST     跑到寶箱（入口離寶箱有一段距離）並互動，觸發陷阱
+--   DUNGEON_COMBAT    選一次最近的敵人，交給 RSR / Wrath 打，BossMod AI 閃避
+--   DUNGEON_LOOT      開殘留的寶箱（自動開箱插件通常先開完）、處理強欲陷阱
+--   第 1～4 層：
+--     DUNGEON_DOOR      兩扇「寶物庫的門」選一扇：有「右側／左側的門發光了！」時只剩一扇可互動，選那扇；沒有就隨機
+--     DUNGEON_DOOR_WAIT 等開門（或關門）動畫結束
+--     DUNGEON_PASSAGE   走進打開的門，踩上門後的傳送法陣（不能互動）到下一層
+--   第 5 層：DUNGEON_EXIT 找離開用的傳送魔紋
+-- 選錯門被移出寶物庫時，任何一步發現不在寶物庫就轉 DUNGEON_EXIT
+
+-- 場上所有「名稱相符且可選取」的物件（Dalamud 物件）
+function Api.TargetableObjects(name)
+    local list = {}
+    if name == nil or name == "" then return list end
+    pcall(function()
+        local objs = Svc.Objects
+        for i = 0, objs.Length - 1 do
+            local o = objs[i]
+            if o ~= nil and o.IsTargetable and o.Name.TextValue == name then table.insert(list, o) end
+        end
+    end)
+    return list
+end
+
+-- 選取指定物件，太遠就先走過去，到了再互動（同 ApproachAndInteract，但對象是已經挑好的物件）
+local function ApproachAndInteractObject(obj)
+    if obj == nil or not pcall(function() Svc.Targets.Target = obj end) then return false end
+    local t = Entity.Target
+    if t == nil then return false end
+    if t.DistanceTo ~= nil and t.DistanceTo > 3 then
+        if not Api.NavRunning() then yield("/vnav movetarget") end
+        return false
+    end
+    Api.NavStop()
+    Api.WrathOff()   -- 互動保護
+    if not Dismount() then return false end
+    Api.InteractTarget()
+    return true
+end
 
 function Handlers.DUNGEON_INIT()
     if Api.Condition(Cond.betweenAreas) then
@@ -1820,18 +1814,19 @@ function Handlers.DUNGEON_INIT()
     return "DUNGEON_CHEST"
 end
 
+-- 跑到這一層的寶箱並互動（ApproachAndInteract 會先用 vnavmesh 走過去），觸發陷阱就進入戰鬥
 function Handlers.DUNGEON_CHEST()
     if not InDuty() then return "DUNGEON_EXIT" end
     if Api.Condition(Cond.inCombat) then return "DUNGEON_COMBAT" end
     if Api.ConfirmYes() then return nil end
-    if not Api.Condition(Cond.occupiedInEvent) then
+    if Api.GetEntity(Cfg.DungeonChestName) ~= nil and not Api.Condition(Cond.occupiedInEvent) then
         ApproachAndInteract(Cfg.DungeonChestName)
     end
     if TimedOut("DUNGEON_CHEST") then return "ERROR" end
 end
 
--- 機運怪（Alpaca/Uolon of Fortune、Turali 蔬菜、Tuligora Queen）一律交給 Wrath 自動選目標；
--- 蔬菜需依號碼由小到大擊殺，Wrath 不會照順序打，會損失額外獎勵
+-- 寶物庫戰鬥：一進入就選最近的敵人（怪物出現前可能有動畫：每秒重試，最多 EnemyWait 秒），之後交給 RSR / Wrath；
+-- 脫離戰鬥滿 3 秒、EnemySearchRange 內找不到敵人才算打完；一次都沒看過敵人就等到 EnemyWait + 15 秒
 function Handlers.DUNGEON_COMBAT()
     if Api.Condition(Cond.dead) then
         LeaveCombat()
@@ -1839,15 +1834,13 @@ function Handlers.DUNGEON_COMBAT()
         return "DUNGEON_EXIT"
     end
     if not InDuty() then LeaveCombat(); return "DUNGEON_EXIT" end
-    -- 一進入就選最近的敵人。G15 進入時會先播輪盤動畫（30 秒以上），怪物動畫結束才出現：
-    -- 每秒重試，最多等 RouletteWait 秒；選到後交給 Wrath，不保持鎖定
     if not State.combatTargeted then
         if Elapsed() - (State.lastEnemyScan or -10) >= 1 then
             State.lastEnemyScan = Elapsed()
             if Api.EngageNearestEnemy(Cfg.EnemySearchRange) then
                 State.combatTargeted, State.enemySeen = true, true
                 Log("選取最近的敵人")
-            elseif Elapsed() > Cfg.RouletteWait then
+            elseif Elapsed() > Cfg.EnemyWait then
                 State.combatTargeted = true
             end
         end
@@ -1859,7 +1852,6 @@ function Handlers.DUNGEON_COMBAT()
         CombatTick()
         return nil
     end
-    -- 脫離戰鬥滿 3 秒才確認還有沒有敵人（戰鬥中不解除、不重選）
     if Elapsed() - (State.lastInCombat or 0) < 3 then return nil end
     if Api.AnyEnemyLeft(Cfg.EnemySearchRange) then
         State.enemySeen = true
@@ -1867,22 +1859,63 @@ function Handlers.DUNGEON_COMBAT()
         if not State.wrathOn then Api.WrathOn() end
         return nil
     end
-    -- 一次都沒看過敵人：可能還在播動畫，等到 RouletteWait + 15 秒才放棄
-    if not State.enemySeen and Elapsed() < Cfg.RouletteWait + 15 then return nil end
+    if not State.enemySeen and Elapsed() < Cfg.EnemyWait + 15 then return nil end
     LeaveCombat()
     Api.ClearTarget()
     return "DUNGEON_LOOT"
 end
 
--- 開寶箱：可能有多個（自動開箱插件通常會先開完，這裡只處理殘留的）。前 3 秒先讓插件開，
--- 之後還有可互動的寶箱就由腳本開；最後一次互動（或一開始就沒寶箱）後等 10 秒沒有新寶箱才進下一步
+-- 強欲陷阱：出現大／小兩顆魔法球。GambleMode = Big / Small 時互動那一顆（每一輪一次），Ignore 時不互動。
+-- 魔法球消失滿 5 秒（或整體超過 120 秒）就算結束。回傳 true 表示還在進行中
+local function HandleGamble()
+    if not State.gambleActive then return false end
+    State.gambleSince = State.gambleSince or Elapsed()
+    local big, small = Api.GetEntity(Cfg.GambleBigName), Api.GetEntity(Cfg.GambleSmallName)
+    if big ~= nil or small ~= nil then
+        State.gambleGoneAt = nil
+        if Cfg.GambleMode == "Big" or Cfg.GambleMode == "Small" then
+            local name = Cfg.GambleMode == "Big" and Cfg.GambleBigName or Cfg.GambleSmallName
+            if not State.gambleChosen and not Api.Condition(Cond.occupiedInEvent) then
+                if ApproachAndInteract(name) then
+                    State.gambleChosen = true
+                    Log("強欲陷阱：選「" .. name .. "」")
+                end
+            end
+            Api.ConfirmYes()
+        elseif not State.gambleLogged then
+            Log("強欲陷阱：GambleMode = Ignore，不互動，等它結束")
+            State.gambleLogged = true
+        end
+    else
+        State.gambleChosen = false   -- 魔法球消失：下一輪出現時可以再選
+        State.gambleGoneAt = State.gambleGoneAt or Elapsed()
+        if Elapsed() - State.gambleGoneAt >= 5 then
+            State.gambleActive, State.gambleSince, State.gambleGoneAt, State.gambleLogged = false, nil, nil, false
+            Log("強欲陷阱結束")
+            return false
+        end
+    end
+    if Elapsed() - State.gambleSince > 120 then
+        State.gambleActive, State.gambleSince, State.gambleGoneAt, State.gambleLogged = false, nil, nil, false
+        Log("強欲陷阱超過 120 秒，不再等")
+        return false
+    end
+    return true
+end
+
+-- 開殘留的寶箱、處理強欲陷阱；最後一次互動後 10 秒沒有新寶箱、強欲陷阱也結束了，才去選門（第 5 層則離開）
 function Handlers.DUNGEON_LOOT()
     if not InDuty() then return "DUNGEON_EXIT" end
-    if Api.Condition(Cond.inCombat) then return "DUNGEON_COMBAT" end   -- 開箱又觸發額外怪
-    if Api.DeclineGamble() then return nil end
+    if Api.Condition(Cond.inCombat) then return "DUNGEON_COMBAT" end   -- 開箱又觸發額外的怪
     if State.lastChestAt == nil then State.lastChestAt = Elapsed() end
+    if HandleGamble() then
+        State.lastChestAt = Elapsed()
+        if TimedOut("DUNGEON_LOOT") then return "ERROR" end
+        return nil
+    end
 
     if Api.GetEntity(Cfg.DungeonChestName) ~= nil then
+        -- 前 3 秒先讓自動開箱插件開，之後還有殘留的寶箱才由腳本接手
         if Elapsed() > 3 and not Api.Condition(Cond.occupiedInEvent) and ApproachAndInteract(Cfg.DungeonChestName) then
             State.lastChestAt = Elapsed()
         end
@@ -1891,72 +1924,113 @@ function Handlers.DUNGEON_LOOT()
     end
     if Api.Condition(Cond.occupiedInEvent) or Elapsed() - State.lastChestAt < 10 then return nil end
 
-    Log("第 " .. State.stage .. " 關完成")
+    Log("第 " .. State.stage .. " 層完成")
     if State.stage >= MAX_STAGES then return "DUNGEON_EXIT" end
     return "DUNGEON_DOOR"
 end
 
--- 選門：兩扇門同名，Random = 隨機挑一扇，First = 永遠挑第一個找到的
--- TODO 彩虹箭頭與門的閃光有時會提示正確的門，偵測方式未知，目前不使用
+-- 選門：場上可互動的「寶物庫的門」。有發光提示時只會剩一扇，選那扇（提示後最多再等 5 秒讓另一扇消失）；
+-- 沒有提示就先等 DoorHintWait 秒，之後依 DoorChoice 選（Random 隨機 / First 第一個）
 function Handlers.DUNGEON_DOOR()
     if not InDuty() then return "DUNGEON_EXIT" end
     if Api.ConfirmYes() then return nil end
 
-    if State.chosenDoor == nil then
-        local doors = Api.GetEntities(Cfg.DoorName)
+    if State.doorPos == nil then
+        local doors = Api.TargetableObjects(Cfg.DoorName)
         if #doors == 0 then
             if TimedOut("DUNGEON_DOOR") then return "ERROR" end
             return nil
         end
-        local idx = Cfg.DoorChoice == "Random" and math.random(#doors) or 1
-        State.chosenDoor = doors[idx]
-        Log("第 " .. State.stage .. " 關選門：" .. idx .. "/" .. #doors)
+        if #doors > 1 then
+            if State.doorHint == nil and Elapsed() < Cfg.DoorHintWait then return nil end
+            if State.doorHint ~= nil and Elapsed() < Cfg.DoorHintWait + 5 then return nil end
+        end
+        local idx = 1
+        if #doors > 1 and Cfg.DoorChoice == "Random" then idx = math.random(#doors) end
+        local door = doors[idx]
+        if #doors == 1 then
+            Log("第 " .. State.stage .. " 層選門：" .. (State.doorHint and (State.doorHint .. "的門發光，") or "") .. "只剩一扇")
+        else
+            Log("第 " .. State.stage .. " 層選門：沒有提示，" .. (Cfg.DoorChoice == "Random" and "隨機" or "第一個") .. "（" .. idx .. "/" .. #doors .. "）")
+        end
+        -- 記下門和選門前站的位置（門開了之後物件可能消失，之後只用座標）
+        State.doorObj = door
+        State.doorPos = Vector3(door.Position.X, door.Position.Y, door.Position.Z)
+        State.doorFrom = Api.PlayerPos()
     end
 
-    Api.TargetObject(State.chosenDoor)
-    if not Api.Condition(Cond.occupiedInEvent) and ApproachAndInteractTarget() then
-        State.doorOpenedAt = os.clock()
-        return "DUNGEON_PASSAGE"
+    if not Api.Condition(Cond.occupiedInEvent) and ApproachAndInteractObject(State.doorObj) then
+        return "DUNGEON_DOOR_WAIT"
     end
     if TimedOut("DUNGEON_DOOR") then return "ERROR" end
 end
 
--- 開門結果有四種：直接開、短暫關閉後開、警報後彩虹光開、警報後移出副本
-function Handlers.DUNGEON_PASSAGE()
+-- 等開門（或關門）動畫：門可能直接開、關一下再開、警報後彩虹光再開，或警報後把人移出寶物庫
+function Handlers.DUNGEON_DOOR_WAIT()
     if not InDuty() then
-        State.chosenDoor = nil
-        Log("選錯門，被移出副本")
+        Log("選錯門，被移出寶物庫")
         return "DUNGEON_EXIT"
     end
-    if Busy() or Api.Condition(Cond.occupiedInEvent) then return nil end
+    if Api.ConfirmYes() then return nil end
+    if Elapsed() < Cfg.DoorAnimWait or Api.Condition(Cond.occupiedInEvent) then return nil end
+    return "DUNGEON_PASSAGE"
+end
 
-    -- 門開了：往前走到下一關的寶箱
-    if Api.GetEntity(Cfg.DungeonChestName) ~= nil then
-        State.chosenDoor = nil
-        State.stage = State.stage + 1
-        Log("進入第 " .. State.stage .. " 關")
-        return "DUNGEON_CHEST"
+-- 走進門：門後有傳送法陣（不能互動、沒有名稱），踩上去會被傳到下一層。
+-- 從選門前站的位置往門的方向，穿過門再往前 PassageDistance（每次沒傳送成功就再往前 4）。
+-- 角色位置瞬間跳動超過 30（被傳送）就算到了下一層
+function Handlers.DUNGEON_PASSAGE()
+    if not InDuty() then
+        Log("選錯門，被移出寶物庫")
+        return "DUNGEON_EXIT"
     end
-    if not Api.NavRunning() and State.chosenDoor ~= nil then
-        -- TODO 門後的通道方向未知；先朝門的位置再往前移動，實測後改成下一關中心座標
-        local d, p = State.chosenDoor.Position, Api.PlayerPos()
-        Api.NavMoveTo(Vector3(d.X + (d.X - p.X), d.Y, d.Z + (d.Z - p.Z)), false)
+    if Busy() then return nil end
+
+    local pos = Api.PlayerPos()
+    local last = State.passLastPos
+    State.passLastPos = pos
+    if last ~= nil then
+        local dx, dy, dz = pos.X - last.X, pos.Y - last.Y, pos.Z - last.Z
+        if dx * dx + dy * dy + dz * dz > 30 * 30 then
+            State.stage = State.stage + 1
+            State.doorPos, State.doorObj, State.doorFrom = nil, nil, nil
+            Api.NavStop()
+            Log("到達第 " .. State.stage .. " 層")
+            return "DUNGEON_CHEST"
+        end
+    end
+
+    if not Api.NavRunning() then
+        State.passTries = (State.passTries or 0) + 1
+        local d, f = State.doorPos, State.doorFrom
+        local dx, dz = d.X - f.X, d.Z - f.Z
+        local len = math.max(math.sqrt(dx * dx + dz * dz), 0.01)
+        local dist = Cfg.PassageDistance + (State.passTries - 1) * 4
+        local x, z = d.X + dx / len * dist, d.Z + dz / len * dist
+        local target = Api.PointOnFloor(x, z) or Vector3(x, d.Y, z)
+        if State.passTries == 1 then Log("走進門，前往傳送法陣") end
+        Api.NavMoveTo(target, false)
     end
     if TimedOut("DUNGEON_PASSAGE") then return "ERROR" end
 end
 
+-- 離開寶物庫：還在寶物庫內就找離開用的傳送魔紋（ExitPortalName）互動並確認；被移出或陣亡結束時直接等回到野外
 function Handlers.DUNGEON_EXIT()
     if not InDuty() and not Busy() then
         local reached = math.min(State.stage, MAX_STAGES)
         table.insert(State.stageLog, reached)
-        Log("寶物庫結束，到達第 " .. reached .. " 關")
+        Log("寶物庫結束，到達第 " .. reached .. " 層")
         return "CHECK_MAP"
     end
-    if InDuty() and not State.leaveSent and not Api.Condition(Cond.dead) then
-        Api.LeaveDuty()
-        State.leaveSent = true
+    if InDuty() and not Busy() and not Api.Condition(Cond.dead) then
+        if Api.ConfirmYes() then return nil end
+        if Api.GetEntity(Cfg.ExitPortalName) ~= nil then
+            if not Api.Condition(Cond.occupiedInEvent) then ApproachAndInteract(Cfg.ExitPortalName) end
+        elseif not State.manualPrompted and Elapsed() > 20 then
+            Log("找不到離開用的「" .. Cfg.ExitPortalName .. "」，請確認 ExitPortalName 或手動離開")
+            State.manualPrompted = true
+        end
     end
-    Api.ConfirmYes()
     if TimedOut("DUNGEON_EXIT") then return "ERROR" end
 end
 
@@ -1967,10 +2041,10 @@ function Handlers.ERROR()
     State.errors = State.errors + 1
     State.errorCount = State.errorCount + 1
     LogError("狀態 " .. tostring(State.errorFrom) .. " 失敗（連續 " .. State.errors .. "/" .. Cfg.MaxErrors .. "）")
+    -- 清掉各狀態的暫存旗標
     State.tmapSent, State.teleportSent = false, false, false
-    State.digSent, State.chestOpened, State.leaveSent = false, false, false
+    State.digSent, State.chestOpened, State.rouletteStarted = false, false, false
     pcall(CloseMarket)
-    State.chosenDoor = nil
     if State.errors >= Cfg.MaxErrors then return "END" end
     if InDuty() then return "DUNGEON_EXIT" end
     return "CHECK_MAP"
@@ -1994,7 +2068,7 @@ local function Transition(next)
     end
     if next == "ERROR" then State.errorFrom = State.current end
     if next == "TRAVEL" then State.cofferPos, State.leashing = nil, false end
-    if next == "CHECK_MAP" then State.leaveSent = false end
+    if next == "OPEN_COFFER" then State.fieldCleared = false end
     Log(State.current .. " → " .. next)
     State.current = next
     State.enteredAt = os.clock()
@@ -2004,11 +2078,11 @@ local function Transition(next)
     State.combatTargeted, State.lastEnemyScan, State.lastInCombat, State.enemySeen = false, nil, nil, false
     State.favoritesTried = false
     State.lastChestAt = nil
+    State.passLastPos, State.passTries = nil, 0
+    if next == "DUNGEON_CHEST" then State.doorHint, State.gambleActive = nil, false end
     State.spotLogged = nil
     State.searchTries, State.lastSearch, State.manualPrompted = 0, nil, false
 end
-
-math.randomseed(os.time())
 
 while true do
     if Api.StopRequested() and State.current ~= "END" then
@@ -2020,6 +2094,7 @@ while true do
         break
     end
 
+    -- 讀取中保護：只等待（DUNGEON_INIT / TRAVEL / ENTER_DUNGEON 自己處理讀取）
     local waitsOnLoading = State.current == "DUNGEON_INIT" or State.current == "TRAVEL"
         or State.current == "ENTER_DUNGEON" or State.current == "DUNGEON_EXIT"
         or State.current == "MB_TRAVEL" or State.current == "WORLD_TRAVEL"
@@ -2041,6 +2116,7 @@ while true do
             result = "ERROR"
         elseif result == nil and Timeout[State.current] ~= nil
             and Elapsed() > Timeout[State.current] + 5 then
+            -- 保底：處理函式沒自行判斷逾時時強制轉 ERROR
             result = "ERROR"
         end
         Transition(result)

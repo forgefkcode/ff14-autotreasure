@@ -5,13 +5,11 @@ SND（Something Need Doing）Lua 腳本，戰士單人循環挖寶與寶物庫�
 | 腳本 | 狀態 | 地圖 | 藏寶地區 | 寶物庫 |
 | --- | --- | --- | --- | --- |
 | [G15_AutoTreasure.lua](G15_AutoTreasure.lua) | 實測調整中 | 陳舊的地圖G15（Timeworn Ophiotauroskin Map） | 厄爾庇斯 | The Shifting Gymnasion Agonon（輪盤型，5 關） |
-| [G14_AutoTreasure.lua](G14_AutoTreasure.lua) | 新寫，尚未實測（由 G15 改寫） | 陳舊的地圖G14（Timeworn Kumbhiraskin Map） | 曉月版 5 區（迷津、薩維奈島、加雷馬、嘆息海、天外天垓） | 驚奇百寶城（The Excitatron 6000，選門型，5 層） |
-| [G17_AutoTreasure.lua](G17_AutoTreasure.lua) | 尚未實測，之後再調整 | 陳舊的地圖G17（Timeworn Br'aaxskin Map，8 人圖） | 黃金版 5 區（Living Memory 除外） | Cenote Ja Ja Gural（選門型，5 關） |
+| [G17_AutoTreasure.lua](G17_AutoTreasure.lua) | 由 G15 改寫（寶物庫為選門流程），尚未實測 | 陳舊的地圖G17（Timeworn Br'aaxskin Map，8 人圖） | 黃金版 5 區（Living Memory 除外） | Cenote Ja Ja Gural（選門型，5 關） |
 
 直接下載（貼進 SND）：
 
 - G15：https://raw.githubusercontent.com/forgefkcode/ff14-autotreasure/main/G15_AutoTreasure.lua
-- G14：https://raw.githubusercontent.com/forgefkcode/ff14-autotreasure/main/G14_AutoTreasure.lua
 - G17：https://raw.githubusercontent.com/forgefkcode/ff14-autotreasure/main/G17_AutoTreasure.lua
 
 測試工具（`tools/`）：
@@ -22,7 +20,7 @@ SND（Something Need Doing）Lua 腳本，戰士單人循環挖寶與寶物庫�
 
 ## 需求
 
-- SND（Lua 引擎）、vnavmesh（移動）、Lifestream（傳送）、自動輸出 RotationSolver Reborn 或 Wrath Combo（擇一，`RotationPlugin` 預設自動偵測，優先 RSR）、閃避 BossMod 或 BossMod Reborn（擇一，只開 AI 閃避；`BossModPlugin` 預設自動偵測，優先 BossMod）。目前只有 G15 支援 RSR；G15 的喝藥交給 RSR 處理
+- SND（Lua 引擎）、vnavmesh（移動）、Lifestream（傳送）、自動輸出 RotationSolver Reborn 或 Wrath Combo（擇一，`RotationPlugin` 預設自動偵測，優先 RSR）、閃避 BossMod 或 BossMod Reborn（擇一，只開 AI 閃避；`BossModPlugin` 預設自動偵測，優先 BossMod）。G15、G17 都支援 RSR，喝藥交給 RSR 處理
 - 建議：[XIV 藏寶圖工具小幫手](https://github.com/cycleapple/xiv-party-treasure-helper)（XivTreasureParty），開啟「解碼後自動開地圖打旗標」，解讀後自動在藏寶點插旗；沒裝就要手動插旗
 
 ## 使用的插件版本
@@ -48,7 +46,7 @@ G15 目前實測使用的組合（感謝兩位大神）：
 - Universalis 的價格是玩家上傳的，可能有延遲；到了之後實際價格超過 `MaxMapPrice` 或已被買走，會排除該伺服器、改去下一個最便宜的
 - 查不到價格（網路問題、沒有符合條件的上架）時，留在目前伺服器照常買
 
-## G14 寶物庫（驚奇百寶城）
+## G17 寶物庫（Cenote Ja Ja Gural，選門型）
 
 每一層：跑到寶箱 → 開寶箱打怪 → 開殘留寶箱、處理強欲陷阱 → 兩扇「寶物庫的門」選一扇 → 等開門動畫 → 走進門踩傳送法陣到下一層，共 5 層。
 

@@ -86,9 +86,6 @@ configs:
   EnemySearchRange:
     default: 100
     description: 寶物庫內找敵人的範圍（選最近的敵人、確認是否打完都用這個）
-  PullActionId:
-    default: 46
-    description: 選到最近的敵人後施放的起手技能 ID（46 = 飛斧，射程 20）；0 = 不施放
   PotionHpPercent:
     default: 40
     description: HP 低於此百分比時喝藥（0 = 不喝）
@@ -209,7 +206,6 @@ local Cfg = {
     PortalWait       = Config.Get("PortalWait"),
     RouletteWait     = Config.Get("RouletteWait"),
     EnemySearchRange = Config.Get("EnemySearchRange"),
-    PullActionId     = Config.Get("PullActionId"),
     PotionHpPercent  = Config.Get("PotionHpPercent"),
     PotionItemName   = Config.Get("PotionItemName"),
     PotionCooldown   = Config.Get("PotionCooldown"),
@@ -604,56 +600,9 @@ function Api.TargetNearestEnemy(maxDistance)
     return Entity.Target ~= nil
 end
 
--- 起手技能（預設飛斧 46）現在能不能放：不在互動 / 詠唱 / 騎乘中，且遊戲回報可用
--- （Actions.GetActionStatus 回 0 = 可用；1 = 一般技能類型）。查不到狀態時只看角色狀態
-function Api.PullReady()
-    if Api.Condition(Cond.occupiedInEvent) or Api.Condition(Cond.casting) or Api.Condition(Cond.mounted) then
-        return false
-    end
-    local ok, status = pcall(function() return Actions.GetActionStatus(1, Cfg.PullActionId) end)
-    if ok and tonumber(status) ~= nil then return tonumber(status) == 0 end
-    return true
-end
-
--- 施放起手技能：用遊戲原生的 /ac 技能名稱（等同玩家按巨集，對目前目標施放；名稱從遊戲資料取，自動是客戶端語言）。
--- 現在不能放就回 false，由 CombatTick 在 5 秒內重試
-function Api.TryPull()
-    if Cfg.PullActionId == nil or Cfg.PullActionId <= 0 then return true end
-    if Entity.Target == nil or not Api.PullReady() then return false end
-    local ok, name = pcall(function() return tostring(Excel.GetRow("Action", Cfg.PullActionId).Name) end)
-    local t = Entity.Target
-    local dist = (t ~= nil and t.DistanceTo ~= nil) and string.format("%.1f", t.DistanceTo) or "?"
-    if ok and name ~= nil and name ~= "" and name ~= "nil" then
-        Log("施放 " .. name .. "（距離 " .. dist .. "）")
-        yield('/ac "' .. name .. '"')
-    else
-        Log("施放技能 " .. Cfg.PullActionId .. "（距離 " .. dist .. "）")
-        pcall(function() Actions.ExecuteAction(Cfg.PullActionId, 1) end)
-    end
-    return true
-end
-
--- 選最近的敵人並施放起手技能帶動 Wrath 開打；太遠先往敵人走（最多 5 秒）。
--- 當下不能放（剛開完寶箱還在互動、公共冷卻中）就記著，CombatTick 會在 5 秒內重試
+-- 選最近的敵人一次，之後交給 Wrath 打（不施放起手技能）
 function Api.EngageNearestEnemy(maxDistance)
-    if not Api.TargetNearestEnemy(maxDistance) then return false end
-    if Cfg.PullActionId == nil or Cfg.PullActionId <= 0 then return true end
-    local t = Entity.Target
-    if t ~= nil and t.DistanceTo ~= nil and t.DistanceTo > 18 then
-        yield("/vnav movetarget")
-        for _ = 1, 10 do
-            yield("/wait 0.5")
-            t = Entity.Target
-            if t == nil or t.DistanceTo == nil or t.DistanceTo <= 18 then break end
-        end
-        Api.NavStop()
-    end
-    if Api.TryPull() then
-        State.pullUntil = nil
-    else
-        State.pullUntil = os.clock() + 5
-    end
-    return true
+    return Api.TargetNearestEnemy(maxDistance)
 end
 
 -- maxDistance 內還有沒有敵人：先解除選取再 /targetenemy，選到且夠近才算（太遠的野外怪不算，並取消選取）
@@ -1424,10 +1373,6 @@ local function CombatTick()
         Api.NavStop()
         Api.WrathOn()
     end
-    -- 起手技能剛才沒放出去：5 秒內每輪重試
-    if State.pullUntil ~= nil then
-        if os.clock() > State.pullUntil or Api.TryPull() then State.pullUntil = nil end
-    end
     MaybeDrinkPotion()
 end
 
@@ -1968,7 +1913,6 @@ local function Transition(next)
     State.sent, State.lastClick, State.travelPhase, State.decipherAt = false, nil, nil, nil
     State.cityTeleportSent = false
     State.combatTargeted, State.lastEnemyScan, State.lastInCombat, State.enemySeen = false, nil, nil, false
-    State.pullUntil = nil
     State.favoritesTried = false
     State.lastChestAt = nil
     State.spotLogged = nil

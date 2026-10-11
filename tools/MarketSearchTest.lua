@@ -1,12 +1,12 @@
 --[=====[
 [[SND Metadata]]
 author: forgefk
-version: 0.7.0
-description: 測試市場板搜尋視窗 callback「12 1」～「12 6」各是什麼。先打開市場板（停在搜尋視窗）再執行，每組停 4 秒，請看畫面切到哪個分頁，並把聊天框的 [MBTest] 訊息貼回來。不會購買。
+version: 0.8.0
+description: 測試市場板搜尋視窗 callback「12 1」～「12 6」，並實際點開地圖的上架清單、讀價格（與正式腳本相同的方法），但不購買。站在市場板旁執行，把聊天框的 [MBTest] 訊息貼回來。
 configs:
   ItemId:
     default: 39591
-    description: 要找的物品 ID（39591 = G15，43557 = G17），用來標示清單上有沒有這張圖
+    description: 要找的物品 ID（39591 = G15，43557 = G17）
 [[End Metadata]]
 --]=====]
 
@@ -40,13 +40,13 @@ local function ListSummary()
     return table.concat(names, "、")
 end
 
-local function HasItem(name)
+local function FindIndex(name)
     for i = 0, 99 do
         local t = ListText(i)
-        if t == "" or t == "nil" then return false end
-        if t == name or (t:sub(-3) == "..." and name:find(t:sub(1, -4), 1, true) == 1) then return true end
+        if t == "" or t == "nil" then return nil end
+        if t == name or (t:sub(-3) == "..." and name:find(t:sub(1, -4), 1, true) == 1) then return i end
     end
-    return false
+    return nil
 end
 
 local function CloseResult()
@@ -57,35 +57,79 @@ local function CloseResult()
     end
 end
 
+-- 讀上架清單第一筆的單價、數量（與正式腳本 Api.MarketFirstListing 相同）
+local function FirstListing()
+    local priceText = NodeText("ItemSearchResult", 1, 26, 4, 5)
+    local countText = NodeText("ItemSearchResult", 1, 26, 4, 6)
+    local price = tonumber((priceText:gsub("%D", "")))
+    local count = tonumber((countText:gsub("%D", "")))
+    return price, count, priceText, countText, NodeText("ItemSearchResult", 1, 5)
+end
+
 local name = tostring(Excel.GetRow("Item", Config.Get("ItemId")).Name)
 Echo("要找的地圖：" .. name)
 
+-- 0. 沒開就自動打開市場板（名稱從遊戲資料取，與正式腳本相同）
 if not Ready("ItemSearch") then
-    Echo("ItemSearch 沒開，請先打開市場板再執行")
-    return
+    local boardName = tostring(Excel.GetRow("EObjName", 2000073).Singular)
+    local board = Entity.GetEntityByName(boardName)
+    if board == nil then
+        Echo("附近找不到「" .. boardName .. "」，請站到市場板旁再執行")
+        return
+    end
+    Echo("打開市場板「" .. boardName .. "」（距離 " .. string.format("%.1f", board.DistanceTo or -1) .. "）")
+    board:SetAsTarget()
+    board:Interact()
+    for _ = 1, 20 do
+        yield("/wait 0.5")
+        if Ready("ItemSearch") then break end
+    end
+    if not Ready("ItemSearch") then
+        Echo("10 秒內搜尋視窗沒有打開（可能太遠，請走近一點）")
+        return
+    end
 end
+Echo("搜尋視窗已開，打開時清單：" .. ListSummary())
 
-local function Report(label)
-    local status = NodeText("ItemSearch", 1, 140)
-    if #status > 30 then status = status:sub(1, 30) .. "…" end
-    Echo(label .. " 清單：" .. ListSummary() .. (HasItem(name) and "（有地圖）" or ""))
-    Echo("   結果數量：「" .. NodeText("ItemSearch", 1, 142, 148) .. "」 狀態文字：「" .. status .. "」")
-end
-
-Report("打開時")
 for i = 1, 6 do
     local c = "12 " .. i
     yield("/callback ItemSearch true " .. c)
     yield("/wait 1")
-    if Ready("ItemSearchResult") then
-        Echo("「" .. c .. "」打開了上架清單，關掉它")
-        CloseResult()
-    end
+    if Ready("ItemSearchResult") then CloseResult() end
     if not Ready("ItemSearch") then
         Echo("「" .. c .. "」把搜尋視窗關掉了，停止測試")
         break
     end
-    Report("「" .. c .. "」")
-    yield("/wait 3")
+    Echo("「" .. c .. "」清單：" .. ListSummary())
+
+    local idx = FindIndex(name)
+    if idx == nil then
+        Echo("   清單上沒有地圖，不點開")
+    else
+        -- 點開地圖的上架清單，等最多 5 秒載入，讀第一筆價格；不購買，讀完就關掉
+        yield("/callback ItemSearch true 5 " .. idx)
+        local opened = false
+        for _ = 1, 10 do
+            yield("/wait 0.5")
+            if Ready("ItemSearchResult") then opened = true break end
+        end
+        if not opened then
+            Echo("   點開地圖（第 " .. idx .. " 項）後，上架清單沒有打開")
+        else
+            local price, count, pt, ct, msg
+            for _ = 1, 10 do
+                yield("/wait 0.5")
+                price, count, pt, ct, msg = FirstListing()
+                if price ~= nil and price > 0 then break end
+            end
+            if price ~= nil and price > 0 then
+                Echo(string.format("   上架清單第一筆：單價 %d、數量 %s（原文：「%s」「%s」）", price, tostring(count), pt, ct))
+            else
+                Echo("   讀不到價格（原文：「" .. tostring(pt) .. "」「" .. tostring(ct) .. "」，訊息：「" .. tostring(msg) .. "」）")
+            end
+            CloseResult()
+        end
+    end
+    yield("/wait 2")
 end
 Echo("測試結束（沒有購買）。請告訴我每一組畫面上是哪個分頁")

@@ -6,6 +6,9 @@ description: FF14 G15 自動挖寶（古舊的蛇牛革地圖）+ 寶物庫 The 
 plugin_dependencies:
 - vnavmesh
 - Lifestream
+function_chat_filters:
+  OnChatMessage:
+    message_contains: "將陷阱引來的魔物全部打倒了"
 configs:
   MapItemId:
     default: 39591
@@ -938,6 +941,15 @@ local function EnsureWrathOff()
     end
 end
 
+-- 野外陷阱魔物全部打倒時，系統訊息「將陷阱引來的魔物全部打倒了！」→ 標記打完，FIELD_COMBAT 看到就去開寶箱。
+-- 開頭的 function_chat_filters 限制只有含這句的訊息才會呼叫這個函式；函式只設一個旗標，盡量不做別的事
+function OnChatMessage()
+    local ok, msg = pcall(function() return tostring(TriggerData.message) end)
+    if ok and msg ~= nil and msg:find("將陷阱引來的魔物全部打倒了", 1, true) then
+        State.fieldCleared = true
+    end
+end
+
 local Handlers = {}
 
 function Handlers.INIT()
@@ -1310,9 +1322,9 @@ local function CombatTick()
     if t ~= nil and (t.Name == Cfg.ChestName or t.Name == Cfg.DungeonChestName) then
         Api.ClearTarget()
     end
-    -- 戰鬥開始時選一次最近的敵人，之後交給 Wrath，不保持鎖定
-    if not State.combatTargeted then
-        Api.EngageNearestEnemy(InDuty() and Cfg.EnemySearchRange or 30)
+    -- 寶物庫戰鬥開始時選一次最近的敵人，之後交給 RSR / Wrath，不保持鎖定；野外不索敵，選目標全交給 RSR / Wrath
+    if InDuty() and not State.combatTargeted then
+        Api.EngageNearestEnemy(Cfg.EnemySearchRange)
         State.combatTargeted = true
     end
     if not State.wrathOn then
@@ -1327,33 +1339,32 @@ local function LeaveCombat()
     State.wrathOn = false
 end
 
--- 野外戰鬥結束：脫離戰鬥滿 3 秒、且 30 內找不到敵人就算打完，去開寶箱並接著找傳送魔紋。
--- 不用聊天訊息觸發（OnChatMessage）：SND 會在主腳本同一個 Lua 環境裡插隊執行它，
--- 每行聊天都觸發，會讓 SND 出現「Unknown error」並直接停掉腳本。
--- 打完後又被旁邊的怪纏上，由 FIELD_FIGHT 先打完再回來
+-- 野外戰鬥結束：聊天出現「將陷阱引來的魔物全部打倒了！」（OnChatMessage 標記）就去開寶箱。
+-- 野外不主動找敵人，選目標交給 RSR / Wrath。打完又被旁邊的怪纏上，由 FIELD_FIGHT 先打完再回來。
+-- 保險：萬一沒收到訊息，脫離戰鬥滿 10 秒也算結束（同樣不索敵）
+local function FieldCombatDone(reason)
+    State.fieldCleared = false
+    Log(reason)
+    LeaveCombat()
+    Api.ClearTarget()
+    if Api.GetEntity(Cfg.ChestName) == nil and Api.GetEntity(Cfg.PortalName) == nil then
+        Log("寶箱已消失（可能超過戰鬥時限）")
+        return "CHECK_MAP"
+    end
+    return "LOOT"
+end
+
 function Handlers.FIELD_COMBAT()
     if Api.Condition(Cond.dead) then LeaveCombat(); return "DEAD" end
+    if State.fieldCleared then return FieldCombatDone("陷阱魔物全部打倒，去開寶箱") end
     if Api.Condition(Cond.inCombat) then
         State.lastInCombat = Elapsed()
         StayNearCoffer()
         CombatTick()
         return nil
     end
-    if Elapsed() - (State.lastInCombat or 0) < 3 then return nil end
-    if Api.AnyEnemyLeft(30) then
-        State.lastInCombat = Elapsed()
-        CombatTick()
-        return nil
-    end
-    Log("陷阱魔物打完了，去開寶箱")
-    LeaveCombat()
-    Api.ClearTarget()
-    yield("/wait 3")
-    if Api.GetEntity(Cfg.ChestName) == nil and Api.GetEntity(Cfg.PortalName) == nil then
-        Log("寶箱已消失（可能超過戰鬥時限）")
-        return "CHECK_MAP"
-    end
-    return "LOOT"
+    if Elapsed() - (State.lastInCombat or 0) < 10 then return nil end
+    return FieldCombatDone("脫離戰鬥 10 秒（沒收到打倒訊息），去開寶箱")
 end
 
 -- 領獎：可能有多個寶箱，還有可互動的寶箱就一個一個開，全部開完才看有沒有傳送魔紋
@@ -1852,6 +1863,7 @@ local function Transition(next)
     end
     if next == "ERROR" then State.errorFrom = State.current end
     if next == "TRAVEL" then State.cofferPos, State.leashing = nil, false end
+    if next == "OPEN_COFFER" then State.fieldCleared = false end
     Log(State.current .. " → " .. next)
     State.current = next
     State.enteredAt = os.clock()

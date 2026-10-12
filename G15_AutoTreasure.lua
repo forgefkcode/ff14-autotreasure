@@ -10,9 +10,6 @@ function_chat_filters:
   OnChatMessage:
     message_contains: "將陷阱引來的魔物全部打倒了"
 configs:
-  MapItemId:
-    default: 39591
-    description: 未解讀 G15 地圖的物品 ID（已查好，取自 XIVAPI；0 = 未設定，INIT 會停止）
   MaxRounds:
     default: 0
     description: 要刷幾輪（一輪 = 買齊 1 張已解讀 + 1 張未解讀並兩張都挖完），0 = 無限循環
@@ -61,9 +58,6 @@ configs:
   MarketBoardName:
     default: ""
     description: 市場板物件名稱（留空 = 自動從遊戲資料取）
-  DecipheredItemId:
-    default: 2003457
-    description: 解讀後的地圖（重要物品）ID，用來判斷身上有沒有已解讀的圖（取自 XIVAPI TreasureHuntRank）
   FlagWait:
     default: 120
     description: 解讀後等藏寶點旗標的秒數（XivTreasureParty 自動打，或你手動插）
@@ -176,11 +170,12 @@ local Cond = {
 }
 
 local Cfg = {
-    MapItemId        = Config.Get("MapItemId"),
+    -- 地圖 ID 寫死、不放設定：SND 把新內容貼進舊腳本時會保留舊的同名設定值，放設定會用到別的等級的圖
+    MapItemId        = 39591,
     MaxRounds        = Config.Get("MaxRounds"),
     MaxMaps          = Config.Get("MaxMaps"),
     EnterDungeon     = Config.Get("EnterDungeon"),
-    DecipheredItemId = Config.Get("DecipheredItemId"),
+    DecipheredItemId = 2003457,   -- 解讀後的重要物品 ID（取自 XIVAPI TreasureHuntRank），同樣寫死
     FlagWait   = Config.Get("FlagWait"),
     AutoBuy          = Config.Get("AutoBuy"),
     RotationPlugin   = Config.Get("RotationPlugin"),

@@ -8,7 +8,7 @@ plugin_dependencies:
 - Lifestream
 function_chat_filters:
   OnChatMessage:
-    message_regex: "將陷阱引來的魔物全部打倒了|門發光了|強欲陷阱發動了"
+    message_regex: "將陷阱引來的魔物全部打倒了|門發光了|強欲陷阱發動了|#繼續"
 configs:
   MaxRounds:
     default: 0
@@ -113,8 +113,8 @@ configs:
     default: 10
     description: 穿過門後再往前走多遠去踩傳送法陣（法陣不能互動、沒有名稱，只能往前走）
   GambleMode:
-    default: "Ignore"
-    description: 強欲陷阱（大／小兩顆魔法球）的處理：Ignore（不互動，等它結束）/ Big（選大）/ Small（選小）
+    default: "Pause"
+    description: 強欲陷阱（大／小兩顆魔法球）的處理：Pause（暫停，讓你自己處理；舊設定值 Ignore 也當 Pause）/ Big（選大）/ Small（選小）
   GambleBigName:
     default: "大"
     description: 強欲陷阱「大」魔法球的物件名稱
@@ -1025,6 +1025,8 @@ function OnChatMessage()
         State.doorHint = "左側"
     elseif msg:find("強欲陷阱發動了", 1, true) then
         State.gambleActive = true
+    elseif msg:match("^%s*#繼續%s*$") then
+        State.resumeRequested = true   -- 你在聊天框輸入 /echo #繼續（整行只有這幾個字；腳本自己的提示訊息開頭是 [G12]，不會觸發）
     end
 end
 
@@ -1844,6 +1846,11 @@ end
 -- 跑到這一層的寶箱並互動（ApproachAndInteract 會先用 vnavmesh 走過去），再看寶箱的反應：
 --   出怪（進入戰鬥或掃到敵人）→ DUNGEON_COMBAT；強欲陷阱 → DUNGEON_LOOT；寶箱直接打開 → DUNGEON_LOOT
 --   沒反應 → 再互動，最多 CHEST_INTERACT_TRIES 次；這層找不到寶箱超過 CHEST_SEARCH_WAIT 秒 → 跳過，交給 DUNGEON_LOOT 收尾
+-- 強欲陷阱要不要暫停：Big / Small 以外（Pause、舊設定值 Ignore、空白）都暫停
+local function GamblePauses()
+    return Cfg.GambleMode ~= "Big" and Cfg.GambleMode ~= "Small"
+end
+
 local VAULT_ENTRY_WAIT     = 10   -- 剛進寶物庫（第 1 層）可以操作後，先等幾秒才往寶箱走（實測要等）
 local FLOOR_SETTLE         = 1.5  -- 第 2 層以後：進入這一層的動畫結束、可以操作後，再等幾秒才開始動
 local CHEST_SEARCH_WAIT    = 15   -- 開始動之後找不到寶箱再等幾秒（樓層可能還在載入），之後跳過
@@ -1901,7 +1908,7 @@ function Handlers.DUNGEON_CHEST()
     if Api.Condition(Cond.inCombat) then return "DUNGEON_COMBAT" end
     if State.gambleActive then
         Log("開寶箱觸發強欲陷阱")
-        return "DUNGEON_LOOT"
+        return GamblePauses() and "DUNGEON_GAMBLE" or "DUNGEON_LOOT"
     end
 
     -- 進入這一層會有一段不能操作的動畫：等到角色可以操作才開始，只等這一次
@@ -2059,6 +2066,7 @@ function Handlers.DUNGEON_LOOT()
     if not InDuty() then return "DUNGEON_EXIT" end
     if Api.Condition(Cond.inCombat) then return "DUNGEON_COMBAT" end   -- 開箱又觸發額外的怪
     if State.lastChestAt == nil then State.lastChestAt = Elapsed() end
+    if State.gambleActive and GamblePauses() then return "DUNGEON_GAMBLE" end
     if HandleGamble() then
         State.lastChestAt = Elapsed()
         if TimedOut("DUNGEON_LOOT") then return "ERROR" end
@@ -2078,6 +2086,39 @@ function Handlers.DUNGEON_LOOT()
     Log("第 " .. State.stage .. " 層完成")
     if State.stage >= MAX_STAGES then return "DUNGEON_EXIT" end
     return "DUNGEON_DOOR"
+end
+
+-- 強欲陷阱暫停（GambleMode = Pause；舊設定值 Ignore 也算）：關掉自動輸出和導航，不互動、不計逾時，讓你自己選大／小或做測試。
+-- 繼續：大／小魔法球出現過、之後消失滿 5 秒；或在聊天框輸入 /echo #繼續。之後回到 DUNGEON_LOOT（開殘留寶箱 → 選門）
+local GAMBLE_NAME_HINT = 15   -- 進入暫停幾秒後還看不到魔法球，就提示可能名稱不對
+
+function Handlers.DUNGEON_GAMBLE()
+    if not InDuty() then return "DUNGEON_EXIT" end
+    if not State.gamblePauseLogged then
+        StopAutomation()
+        Log("強欲陷阱出現，腳本暫停：請自己選大／小（可以跑 GambleTest）。魔法球消失後自動繼續，或輸入 /echo #繼續")
+        State.gamblePauseLogged = true
+    end
+    local function Resume(reason)
+        State.gambleActive, State.resumeRequested = false, false
+        Log(reason .. "，腳本繼續")
+        return "DUNGEON_LOOT"
+    end
+    if State.resumeRequested then return Resume("收到 #繼續") end
+    if Api.GetEntity(Cfg.GambleBigName) ~= nil or Api.GetEntity(Cfg.GambleSmallName) ~= nil then
+        State.gambleSeen, State.gambleGoneAt = true, nil
+        return nil
+    end
+    -- 還沒看到魔法球（還沒出現，或名稱不是「大」「小」）：一直等，不會自己繼續
+    if not State.gambleSeen then
+        if not State.gambleNameHinted and Elapsed() > GAMBLE_NAME_HINT then
+            Log("看不到「" .. Cfg.GambleBigName .. "」「" .. Cfg.GambleSmallName .. "」魔法球（名稱可能不同），處理完請輸入 /echo #繼續")
+            State.gambleNameHinted = true
+        end
+        return nil
+    end
+    State.gambleGoneAt = State.gambleGoneAt or Elapsed()
+    if Elapsed() - State.gambleGoneAt >= 5 then return Resume("強欲陷阱結束") end
 end
 
 -- 選門：場上可互動的「寶物庫的門」。有發光提示時只會剩一扇，選那扇（提示後最多再等 5 秒讓另一扇消失）；
@@ -2116,14 +2157,31 @@ function Handlers.DUNGEON_DOOR()
     if TimedOut("DUNGEON_DOOR") then return "ERROR" end
 end
 
--- 等開門（或關門）動畫：門可能直接開、關一下再開、警報後彩虹光再開，或警報後把人移出寶物庫
+-- 被傳送到下一層：角色位置一次跳動超過 30。跳了就把層數 +1、清掉門的資料，回傳 true
+local function ArrivedNextFloor()
+    local pos = Api.PlayerPos()
+    local last = State.passLastPos
+    State.passLastPos = pos
+    if last == nil then return false end
+    local dx, dy, dz = pos.X - last.X, pos.Y - last.Y, pos.Z - last.Z
+    if dx * dx + dy * dy + dz * dz <= 30 * 30 then return false end
+    State.stage = State.stage + 1
+    State.doorPos, State.doorObj, State.doorFrom = nil, nil, nil
+    Api.NavStop()
+    Log("到達第 " .. State.stage .. " 層")
+    return true
+end
+
+-- 等開門（或關門）動畫：門可能直接開、關一下再開、警報後彩虹光再開，或警報後把人移出寶物庫。
+-- 進下一層有一段不能跳過的動畫：至少等 DoorAnimWait 秒，而且等到角色能移動；動畫直接把人傳到下一層也算到了
 function Handlers.DUNGEON_DOOR_WAIT()
     if not InDuty() then
         Log("選錯門，被移出寶物庫")
         return "DUNGEON_EXIT"
     end
+    if ArrivedNextFloor() then return "DUNGEON_CHEST" end
     if Api.ConfirmYes() then return nil end
-    if Elapsed() < Cfg.DoorAnimWait or Api.Condition(Cond.occupiedInEvent) then return nil end
+    if Elapsed() < Cfg.DoorAnimWait or Api.Condition(Cond.occupiedInEvent) or not Api.PlayerReady() then return nil end
     return "DUNGEON_PASSAGE"
 end
 
@@ -2136,20 +2194,7 @@ function Handlers.DUNGEON_PASSAGE()
         return "DUNGEON_EXIT"
     end
     if Busy() then return nil end
-
-    local pos = Api.PlayerPos()
-    local last = State.passLastPos
-    State.passLastPos = pos
-    if last ~= nil then
-        local dx, dy, dz = pos.X - last.X, pos.Y - last.Y, pos.Z - last.Z
-        if dx * dx + dy * dy + dz * dz > 30 * 30 then
-            State.stage = State.stage + 1
-            State.doorPos, State.doorObj, State.doorFrom = nil, nil, nil
-            Api.NavStop()
-            Log("到達第 " .. State.stage .. " 層")
-            return "DUNGEON_CHEST"
-        end
-    end
+    if ArrivedNextFloor() then return "DUNGEON_CHEST" end
 
     -- 踩上法陣後有一段不能操作的動畫：動畫中不要再下移動指令（不然每次都會再往前 4，越走越遠）
     if not Api.NavRunning() and Api.PlayerReady() and not Api.Condition(Cond.occupiedInEvent) then
@@ -2350,6 +2395,10 @@ local function Transition(next)
     State.chestMovePos, State.chestMoveAt = nil, nil
     State.passLastPos, State.passTries = nil, 0
     if next == "DUNGEON_CHEST" then State.doorHint, State.gambleActive = nil, false end
+    if next == "DUNGEON_GAMBLE" then
+        State.resumeRequested, State.gambleSeen, State.gambleGoneAt = false, false, nil
+        State.gamblePauseLogged, State.gambleNameHinted = false, false
+    end
     State.spotLogged = nil
     State.searchTries, State.lastSearch, State.manualPrompted = 0, nil, false
 end

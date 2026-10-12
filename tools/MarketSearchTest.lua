@@ -1,7 +1,7 @@
 --[=====[
 [[SND Metadata]]
 author: forgefk
-version: 1.1.0
+version: 1.2.0
 description: 測試從市場板「顯示我的最愛」清單分別點開 G12、G15、G17 藏寶圖的上架清單並讀價格，但不購買。站在市場板旁執行，把聊天框的 [MBTest] 訊息貼回來。
 [[End Metadata]]
 --]=====]
@@ -24,29 +24,50 @@ local function NodeText(addon, ...)
     return tostring(t)
 end
 
--- 左側清單第 i 項的名稱（與正式腳本 Api.FindInResults 相同的節點路徑）
-local function ListText(i)
-    return NodeText("ItemSearch", 1, 139, i == 0 and 5 or (51000 + i), 13)
+-- 左側清單各列的名稱，依畫面由上到下：第 0 列在節點 51001、第 1 列 51002…，最後一列在節點 5
+-- （v1.1 照「5 → 51001 → 51002」讀，結果整個錯開一格：點 G12 開到 G15…）
+local function RawNode(id) return NodeText("ItemSearch", 1, 139, id, 13) end
+
+local function Rows()
+    local rows = {}
+    for j = 0, 98 do
+        local t = RawNode(51001 + j)
+        if t == "" or t == "nil" then break end
+        table.insert(rows, t)
+    end
+    local last = RawNode(5)
+    if last ~= "" and last ~= "nil" then table.insert(rows, last) end
+    return rows
 end
 
+local function ListText(i) return Rows()[i + 1] or "" end
+
 local function ListSummary()
-    local names = {}
-    for i = 0, 5 do
-        local t = ListText(i)
-        if t == "" or t == "nil" then break end
-        table.insert(names, i .. ":" .. t)
-    end
-    if #names == 0 then return "（空）" end
-    return table.concat(names, "、")
+    local parts = {}
+    for i, t in ipairs(Rows()) do table.insert(parts, "第" .. (i - 1) .. "列:" .. t) end
+    if #parts == 0 then return "（空）" end
+    return table.concat(parts, "、")
 end
 
 local function FindIndex(name)
-    for i = 0, 99 do
-        local t = ListText(i)
-        if t == "" or t == "nil" then return nil end
-        if t == name or (t:sub(-3) == "..." and name:find(t:sub(1, -4), 1, true) == 1) then return i end
+    for i, t in ipairs(Rows()) do
+        if t == name or (t:sub(-3) == "..." and name:find(t:sub(1, -4), 1, true) == 1) then return i - 1 end
     end
     return nil
+end
+
+-- 購買介面裡有沒有這個物品名稱（找 AtkValues 的文字），順便列出前幾個文字讓我知道名稱放在哪
+local function ResultMentions(name)
+    local found, texts = false, {}
+    for i = 0, 80 do
+        local ok, v = pcall(function() return tostring(Addons.GetAddon("ItemSearchResult"):GetAtkValue(i).ValueString) end)
+        if not ok then break end
+        if v ~= nil and v ~= "" and v ~= "0" and v ~= "nil" and not v:match("^%d+$") then
+            if v:find(name, 1, true) then found = true; table.insert(texts, i .. "=" .. v) end
+            if #texts < 6 and not v:find(name, 1, true) then table.insert(texts, i .. "=" .. v) end
+        end
+    end
+    return found, texts
 end
 
 -- 關掉上架清單（退出），確認真的關掉才回傳 true
@@ -104,7 +125,8 @@ for n, itemId in ipairs(MAPS) do
     if not ShowFavorites() then
         Echo("   按「顯示我的最愛」後清單是空的")
     else
-        Echo("   我的最愛清單：" .. ListSummary())
+        Echo("   原始節點：5=「" .. RawNode(5) .. "」 51001=「" .. RawNode(51001) .. "」 51002=「" .. RawNode(51002) .. "」 51003=「" .. RawNode(51003) .. "」")
+        Echo("   清單（新順序）：" .. ListSummary())
         local idx = FindIndex(name)
         if idx == nil then
             Echo("   清單裡找不到這張圖")
@@ -124,8 +146,10 @@ for n, itemId in ipairs(MAPS) do
                     price, count, pt, ct, msg = FirstListing()
                     if price ~= nil and price > 0 then break end
                 end
+                local mentioned, texts = ResultMentions(name)
+                Echo("   點第 " .. idx .. " 列；購買介面" .. (mentioned and "有" or "沒有") .. "提到「" .. name .. "」，文字：" .. table.concat(texts, "｜"))
                 if price ~= nil and price > 0 then
-                    Echo(string.format("   點第 %d 項成功，第一筆：單價 %d、數量 %s", idx, price, tostring(count)))
+                    Echo(string.format("   第一筆：單價 %d、數量 %s（請看畫面上實際打開的是哪張圖）", price, tostring(count)))
                 else
                     Echo("   上架清單打開了但讀不到價格（原文：「" .. tostring(pt) .. "」「" .. tostring(ct) .. "」，訊息：「" .. tostring(msg) .. "」）")
                 end

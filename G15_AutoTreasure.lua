@@ -629,17 +629,32 @@ function Api.WrathOff()
 end
 
 
--- 解讀視窗是 SelectIconString（標題「解讀」）。依名稱在清單裡找這張地圖的位置，
--- 節點路徑取自社群腳本 Narrr13/snd OpenMap.lua。讀不到清單文字時退回第 1 項
+-- 遊戲清單元件各列的文字，依畫面由上到下：第 0 列在節點 51001、第 1 列 51002…，最後一列在節點 5。
+-- 社群腳本的順序（5 → 51001 → 51002）會整個錯開一格：實測點 G12 開到 G15、G15 開到 G17、G17 開到 G12
+function Api.ListRows(addonName, listNodeId, textNodeId)
+    local function text(id)
+        local ok, t = pcall(function() return tostring(Addons.GetAddon(addonName):GetNode(1, listNodeId, id, textNodeId).Text) end)
+        if not ok or t == nil or t == "nil" then return "" end
+        return t
+    end
+    local rows = {}
+    for j = 0, 98 do
+        local t = text(51001 + j)
+        if t == "" then break end
+        table.insert(rows, t)
+    end
+    local last = text(5)
+    if last ~= "" then table.insert(rows, last) end
+    return rows
+end
+
+-- 解讀視窗是 SelectIconString（標題「解讀」）。依名稱在清單裡找這張地圖是第幾列（從 0 起算），
+-- 節點路徑取自社群腳本 Narrr13/snd OpenMap.lua（列的順序已更正）。讀不到清單文字時退回第 1 列
 function Api.FindDecipherIndex(name)
-    for i = 0, 21 do
-        local nodeId = i == 0 and 5 or (51000 + i)
-        local ok, text = pcall(function() return tostring(Addons.GetAddon("SelectIconString"):GetNode(1, 3, nodeId, 2).Text) end)
-        if not ok or text == nil or text == "" or text == "nil" then
-            if i == 0 then return 0 end
-            break
-        end
-        if text == name or text:find(name, 1, true) then return i end
+    local rows = Api.ListRows("SelectIconString", 3, 2)
+    if #rows == 0 then return 0 end
+    for i, text in ipairs(rows) do
+        if text == name or text:find(name, 1, true) then return i - 1 end
     end
     return nil
 end
@@ -720,16 +735,13 @@ function Api.TypeIntoSearch(text)
     return method
 end
 
--- 在市場板左側清單（我的最愛或搜尋結果）依名稱找出這個物品是第幾項（從 0 起算），找不到回 nil。
--- 節點路徑取自社群腳本 ShamelessEnd/SomethingNeedScripts（第 i 項：i = 0 為 5，其後 51000 + i）；
+-- 在市場板左側清單（我的最愛或搜尋結果）依名稱找出這個物品是第幾列（從 0 起算），找不到回 nil。
+-- 節點路徑取自社群腳本 ShamelessEnd/SomethingNeedScripts（列的順序已更正，見 Api.ListRows）；
 -- 名稱太長時清單會截斷成「...」，比對前半段
 function Api.FindInResults(name)
-    for i = 0, 99 do
-        local nodeId = i == 0 and 5 or (51000 + i)
-        local ok, text = pcall(function() return tostring(Addons.GetAddon("ItemSearch"):GetNode(1, 139, nodeId, 13).Text) end)
-        if not ok or text == nil or text == "" or text == "nil" then return nil end
-        if text == name then return i end
-        if text:sub(-3) == "..." and name:find(text:sub(1, -4), 1, true) == 1 then return i end
+    for i, text in ipairs(Api.ListRows("ItemSearch", 139, 13)) do
+        if text == name then return i - 1 end
+        if text:sub(-3) == "..." and name:find(text:sub(1, -4), 1, true) == 1 then return i - 1 end
     end
     return nil
 end
@@ -739,8 +751,7 @@ function Api.ShowFavorites()
     yield("/callback ItemSearch true " .. Cfg.FavoritesCallback)
     for _ = 1, 6 do
         yield("/wait 0.5")
-        local ok, text = pcall(function() return tostring(Addons.GetAddon("ItemSearch"):GetNode(1, 139, 5, 13).Text) end)
-        if ok and text ~= nil and text ~= "" and text ~= "nil" then return true end
+        if #Api.ListRows("ItemSearch", 139, 13) > 0 then return true end
     end
     return false
 end

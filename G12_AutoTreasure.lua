@@ -1851,6 +1851,8 @@ local CHEST_FAR_RANGE      = 60   -- 還不能互動的寶箱在這個距離內�
 local CHEST_REACT_WAIT     = 8    -- 互動後等寶箱反應幾秒，還能互動就再互動一次
 local CHEST_SETTLE         = 3    -- 寶箱不能互動後至少再等幾秒才判定「直接打開」（怪物出現可能有動畫）
 local CHEST_INTERACT_TRIES = 3
+local CHEST_INTERACT_RANGE = 2    -- 離寶箱中心多近才互動（原本 3 碼、/vnav movetarget 會停在互動距離外）
+local CHEST_STALL          = 3    -- 走向寶箱時幾秒沒前進（被寶箱擋住）就直接互動
 
 -- 名稱相符的物件裡最近的一個（不管能不能互動），回傳物件和平面距離。
 -- 寶箱離入口有一段距離、還不能互動時（Api.GetEntity 只找可互動的），用它的位置先走過去
@@ -1868,6 +1870,30 @@ local function NearestNamedObject(name)
     end
     if best == nil then return nil, nil end
     return best, math.sqrt(bestDist)
+end
+
+-- 一直走到寶箱旁邊，夠近了才互動：直接以寶箱座標為目的地（不用 /vnav movetarget，它會停在互動距離外）。
+-- 走到 CHEST_INTERACT_RANGE 以內，或 CHEST_STALL 秒沒前進（被寶箱擋住）就選取並互動。回傳 true 表示已送出互動
+local function ApproachChest(chest)
+    local me, pos = Api.PlayerPos(), chest.Position
+    local dist = Distance2D(me, pos)
+    if State.chestMoveAt == nil or Distance2D(me, State.chestMovePos) > 0.3 then
+        State.chestMovePos, State.chestMoveAt = me, Elapsed()
+    end
+    if dist > CHEST_INTERACT_RANGE and Elapsed() - State.chestMoveAt < CHEST_STALL then
+        if not Api.NavRunning() then
+            -- 重下導航指令不重設「沒前進」的計時：vnavmesh 一直停在同一點時，CHEST_STALL 秒後就直接互動
+            Api.NavMoveTo(Api.PointOnFloor(pos.X, pos.Z) or pos, false)
+        end
+        return false
+    end
+    Api.NavStop()
+    if not Api.Target(Cfg.DungeonChestName) then return false end
+    Api.WrathOff()   -- 互動保護
+    if not Dismount() then return false end
+    Log(string.format("到寶箱旁（距離 %.1f），互動", dist))
+    Api.InteractTarget()
+    return true
 end
 
 function Handlers.DUNGEON_CHEST()
@@ -1895,7 +1921,7 @@ function Handlers.DUNGEON_CHEST()
 
     local chest = Api.GetEntity(Cfg.DungeonChestName)
 
-    -- 還沒互動：寶箱離入口有一段距離，先走到寶箱附近再互動（可互動的用 ApproachAndInteract；
+    -- 還沒互動：寶箱離入口有一段距離，先走到寶箱旁邊再互動（可互動的用 ApproachChest；
     -- 還不能互動的就用它的位置走過去，到了旁邊變成可互動再互動）。完全找不到寶箱先等一下，太久就跳過
     if State.chestInteractAt == nil then
         if chest == nil then
@@ -1919,7 +1945,7 @@ function Handlers.DUNGEON_CHEST()
             Log(string.format("寶箱在 %.0f 外，走過去", Distance2D(Api.PlayerPos(), chest.Position)))
             State.chestLogged = true
         end
-        if not Api.Condition(Cond.occupiedInEvent) and ApproachAndInteract(Cfg.DungeonChestName) then
+        if not Api.Condition(Cond.occupiedInEvent) and ApproachChest(chest) then
             State.chestInteractAt, State.chestTries = Elapsed(), State.chestTries + 1
         end
         if TimedOut("DUNGEON_CHEST") then return "ERROR" end
@@ -1947,8 +1973,8 @@ function Handlers.DUNGEON_CHEST()
         LogError("互動寶箱 " .. State.chestTries .. " 次都沒有反應")
         return "ERROR"
     end
-    Log("寶箱沒有反應，再互動一次")
-    State.chestInteractAt = nil
+    Log("寶箱沒有反應，再走近一點互動")
+    State.chestInteractAt, State.chestMoveAt = nil, nil
 end
 
 -- 寶物庫戰鬥：等怪物出現（可能有動畫，最多 EnemyWait 秒），只掃描不選取，選目標交給 RSR / Wrath；
@@ -2321,6 +2347,7 @@ local function Transition(next)
     State.favTries = 0
     State.lastChestAt = nil
     State.chestInteractAt, State.chestTries, State.floorReadyAt, State.chestLogged = nil, 0, nil, false
+    State.chestMovePos, State.chestMoveAt = nil, nil
     State.passLastPos, State.passTries = nil, 0
     if next == "DUNGEON_CHEST" then State.doorHint, State.gambleActive = nil, false end
     State.spotLogged = nil

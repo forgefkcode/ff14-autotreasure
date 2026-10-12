@@ -614,7 +614,10 @@ function Api.WrathOn()
     State.wrathOn = true
 end
 
-function Api.WrathOff()
+-- 寶物庫內自動輸出和閃避一直開著（進寶物庫就開，離開寶物庫才關）：寶物庫內一般的關閉呼叫（互動保護、打完怪）都跳過，
+-- 只有 force = true（錯誤、結束）才真的關
+function Api.WrathOff(force)
+    if not force and Api.Territory() == VAULT_TERRITORY then return end
     yield(State.rotation == "RotationSolver" and "/rotation Off" or "/wrath auto off")
     if State.vbmAiOn then
         local aiCmd = BossAiCmd(false)
@@ -831,8 +834,7 @@ local function Busy()
 end
 
 local function StopAutomation()
-    Api.WrathOff()
-    State.wrathOn = false
+    Api.WrathOff(true)   -- 錯誤、結束：寶物庫內也要關
     Api.NavStop()
 end
 
@@ -890,7 +892,6 @@ local function ApproachAndInteract(name)
     end
     Api.NavStop()
     Api.WrathOff()   -- 互動保護
-    State.wrathOn = false
     if not Dismount() then return false end   -- 騎著坐騎不能互動
     Api.InteractTarget()
     return true
@@ -925,7 +926,6 @@ end
 local function EnsureWrathOff()
     if State.wrathOn ~= false then
         Api.WrathOff()
-        State.wrathOn = false
     end
 end
 
@@ -1026,7 +1026,6 @@ function Handlers.INIT()
         Log("提醒：沒偵測到 XivTreasureParty，解讀後需手動插旗")
     end
     Api.WrathOff()
-    State.wrathOn = false
     return "CHECK_MAP"
 end
 
@@ -1324,7 +1323,6 @@ end
 
 local function LeaveCombat()
     Api.WrathOff()
-    State.wrathOn = false
 end
 
 -- 野外戰鬥結束：聊天出現「將陷阱引來的魔物全部打倒了！」（OnChatMessage 標記）就去開寶箱。
@@ -1698,6 +1696,9 @@ function Handlers.DUNGEON_INIT()
         return nil
     end
     State.stage = 1
+    -- 進寶物庫就開自動輸出和閃避，一直開到離開寶物庫（寶物庫內一般的關閉呼叫都會跳過，見 Api.WrathOff）
+    Api.WrathOn()
+    Log("進入寶物庫，開啟自動輸出與閃避")
     return "DUNGEON_SPHERE"
 end
 
@@ -1804,6 +1805,7 @@ end
 -- 被移出或陣亡結束時直接等回到野外
 function Handlers.DUNGEON_EXIT()
     if not InDuty() and not Busy() then
+        Api.WrathOff()   -- 已回到野外：關掉自動輸出和閃避（閃避 AI 不能開到野外）
         local reached = math.min(State.stage, MAX_STAGES)
         table.insert(State.stageLog, reached)
         Log("寶物庫結束，到達第 " .. reached .. " 關")

@@ -696,7 +696,10 @@ function Api.WrathOn()
     State.wrathOn = true
 end
 
-function Api.WrathOff()
+-- 寶物庫內自動輸出和閃避一直開著（進寶物庫就開，離開寶物庫才關）：寶物庫內一般的關閉呼叫（互動保護、打完怪）都跳過，
+-- 只有 force = true（錯誤、結束）才真的關
+function Api.WrathOff(force)
+    if not force and VAULT_TERRITORIES[Api.Territory()] then return end
     yield(State.rotation == "RotationSolver" and "/rotation Off" or "/wrath auto off")
     if State.vbmAiOn then
         local aiCmd = BossAiCmd(false)
@@ -913,8 +916,7 @@ local function Busy()
 end
 
 local function StopAutomation()
-    Api.WrathOff()
-    State.wrathOn = false
+    Api.WrathOff(true)   -- 錯誤、結束：寶物庫內也要關
     Api.NavStop()
 end
 
@@ -972,7 +974,6 @@ local function ApproachAndInteract(name)
     end
     Api.NavStop()
     Api.WrathOff()   -- 互動保護
-    State.wrathOn = false
     if not Dismount() then return false end   -- 騎著坐騎不能互動
     Api.InteractTarget()
     return true
@@ -1007,7 +1008,6 @@ end
 local function EnsureWrathOff()
     if State.wrathOn ~= false then
         Api.WrathOff()
-        State.wrathOn = false
     end
 end
 
@@ -1127,7 +1127,6 @@ function Handlers.INIT()
         Log("提醒：沒偵測到 XivTreasureParty，解讀後需手動插旗")
     end
     Api.WrathOff()
-    State.wrathOn = false
     return "CHECK_MAP"
 end
 
@@ -1429,7 +1428,6 @@ end
 
 local function LeaveCombat()
     Api.WrathOff()
-    State.wrathOn = false
 end
 
 -- 野外戰鬥結束：聊天出現「將陷阱引來的魔物全部打倒了！」（OnChatMessage 標記）就去開寶箱。
@@ -1843,6 +1841,9 @@ function Handlers.DUNGEON_INIT()
         return nil
     end
     State.stage = 1
+    -- 進寶物庫就開自動輸出和閃避，一直開到離開寶物庫（寶物庫內一般的關閉呼叫都會跳過，見 Api.WrathOff）
+    Api.WrathOn()
+    Log("進入寶物庫，開啟自動輸出與閃避")
     if Api.Territory() == ROULETTE_VAULT_TERRITORY then
         Log("這次是轉盤型寶物庫（The Shifting Oubliettes of Lyhe Ghiah）")
         return "DUNGEON_SPHERE"
@@ -2094,14 +2095,14 @@ function Handlers.DUNGEON_LOOT()
     return "DUNGEON_DOOR"
 end
 
--- 強欲陷阱暫停（GambleMode = Pause；舊設定值 Ignore 也算）：關掉自動輸出和導航，不互動、不計逾時，讓你自己選大／小或做測試。
+-- 強欲陷阱暫停（GambleMode = Pause；舊設定值 Ignore 也算）：停止移動（自動輸出和閃避在寶物庫內維持開著），不互動、不計逾時，讓你自己選大／小或做測試。
 -- 繼續：大／小魔法球出現過、之後消失滿 5 秒；或在聊天框輸入 /echo #繼續。之後回到 DUNGEON_LOOT（開殘留寶箱 → 選門）
 local GAMBLE_NAME_HINT = 15   -- 進入暫停幾秒後還看不到魔法球，就提示可能名稱不對
 
 function Handlers.DUNGEON_GAMBLE()
     if not InDuty() then return "DUNGEON_EXIT" end
     if not State.gamblePauseLogged then
-        StopAutomation()
+        Api.NavStop()   -- 寶物庫內自動輸出和閃避維持開著，只停止移動
         Log("強欲陷阱出現，腳本暫停：請自己選大／小（可以跑 GambleTest）。魔法球消失後自動繼續，或輸入 /echo #繼續")
         State.gamblePauseLogged = true
     end
@@ -2333,6 +2334,7 @@ end
 -- 離開寶物庫：還在寶物庫內就找離開用的傳送門（退出點）互動並確認；被移出或陣亡結束時直接等回到野外
 function Handlers.DUNGEON_EXIT()
     if not InDuty() and not Busy() then
+        Api.WrathOff()   -- 已回到野外：關掉自動輸出和閃避（閃避 AI 不能開到野外）
         local reached = math.min(State.stage, MAX_STAGES)
         table.insert(State.stageLog, reached)
         Log("寶物庫結束，到達第 " .. reached .. " 層")

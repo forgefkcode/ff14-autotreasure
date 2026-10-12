@@ -75,7 +75,7 @@ configs:
     description: 野外戰鬥時離寶箱（觸發陷阱的位置）多遠就走回去，太遠陷阱戰鬥會被重置
   FieldLootDelay:
     default: 5
-    description: 野外打完怪後等幾秒再看寶箱（寶箱會自動打開，不用再互動）
+    description: 野外打完怪後等幾秒再開寶箱
   PortalWait:
     default: 10
     description: 開箱後等待傳送門出現的秒數
@@ -280,7 +280,7 @@ local Timeout = {
     OPEN_COFFER      = 15,
     FIELD_COMBAT     = 600,   -- 遊戲戰鬥時限未知，先給寬鬆上限
     FIELD_FIGHT      = 600,
-    LOOT             = 20,    -- 含等寶箱自動打開
+    LOOT             = 10,
     PORTAL_CHECK     = Cfg.PortalWait,
     ENTER_DUNGEON    = 60,
     DEAD             = 120,
@@ -307,6 +307,7 @@ local DIG_OFFSET       = 5
 local STUCK_INTERVAL   = 10
 local STUCK_DISTANCE   = 1
 local MAX_STAGES       = 5
+local VAULT_CHEST_WAIT = 10   -- 寶物庫打完怪後最多等幾秒讓寶箱自動打開（寶物庫的寶箱不用互動）
 
 -------------------------------------------------------------------------------
 -- 2. Api 轉接層（SND v2 API；標 TODO 者為「待確認事項」，實測後修正）
@@ -1399,16 +1400,19 @@ local function LeaveCombat()
     State.wrathOn = false
 end
 
--- 野外戰鬥結束：聊天出現「將陷阱引來的魔物全部打倒了！」（OnChatMessage 標記）就去領獎（寶箱會自動打開）。
+-- 野外戰鬥結束：聊天出現「將陷阱引來的魔物全部打倒了！」（OnChatMessage 標記）就去開寶箱。
 -- 野外不主動找敵人，選目標交給 RSR / Wrath。打完又被旁邊的怪纏上，由 FIELD_FIGHT 先打完再回來。
--- 保險：萬一沒收到訊息，脫離戰鬥滿 10 秒也算結束（同樣不索敵）。
--- 不在這裡判斷「寶箱消失」：寶箱自動打開後就不能互動了，傳送魔紋可能還沒出現，交給 LOOT → PORTAL_CHECK
+-- 保險：萬一沒收到訊息，脫離戰鬥滿 10 秒也算結束（同樣不索敵）
 local function FieldCombatDone(reason)
     State.fieldCleared = false
     Log(reason .. "（等 " .. Cfg.FieldLootDelay .. " 秒）")
     LeaveCombat()
     Api.ClearTarget()
     yield("/wait " .. Cfg.FieldLootDelay)
+    if Api.GetEntity(Cfg.ChestName) == nil and Api.GetEntity(Cfg.PortalName) == nil then
+        Log("寶箱已消失（可能超過戰鬥時限）")
+        return "CHECK_MAP"
+    end
     return "LOOT"
 end
 
@@ -1425,10 +1429,7 @@ function Handlers.FIELD_COMBAT()
     return FieldCombatDone("脫離戰鬥 10 秒（沒收到打倒訊息），去開寶箱")
 end
 
--- 領獎：打完怪寶箱會自動打開，不用再互動。等到沒有可互動的寶箱就算完成，再看有沒有傳送魔紋。
--- 保險：LOOT_AUTO_OPEN_WAIT 秒後還有可互動的寶箱（沒有自動打開），才由腳本互動
-local LOOT_AUTO_OPEN_WAIT = 8
-
+-- 領獎：可能有多個寶箱，還有可互動的寶箱就一個一個開，全部開完才看有沒有傳送魔紋
 function Handlers.LOOT()
     local chest = Api.GetEntity(Cfg.ChestName)
     local portal = Api.GetEntity(Cfg.PortalName)
@@ -1438,14 +1439,7 @@ function Handlers.LOOT()
         Log("完成第 " .. State.mapsDone .. " 張")
         return "PORTAL_CHECK"
     end
-    if Api.Condition(Cond.occupiedInEvent) or Elapsed() < LOOT_AUTO_OPEN_WAIT then
-        if TimedOut("LOOT") then return "ERROR" end
-        return nil
-    end
-    if not State.sent then
-        Log("寶箱沒有自動打開，改由腳本互動")
-        State.sent = true
-    end
+    if Api.Condition(Cond.occupiedInEvent) then return nil end
     ApproachAndInteract(Cfg.ChestName)
     if TimedOut("LOOT") then
         if portal ~= nil then return "PORTAL_CHECK" end
@@ -1766,7 +1760,7 @@ end
 -- 每一層：
 --   DUNGEON_CHEST     跑到寶箱（入口離寶箱有一段距離）並互動，觸發陷阱
 --   DUNGEON_COMBAT    選一次最近的敵人，交給 RSR / Wrath 打，BossMod AI 閃避
---   DUNGEON_LOOT      開殘留的寶箱（自動開箱插件通常先開完）、處理強欲陷阱
+--   DUNGEON_LOOT      等寶箱自動打開（寶物庫的寶箱不用互動）、處理強欲陷阱
 --   第 1～4 層：
 --     DUNGEON_DOOR      兩扇「寶物庫的門」選一扇：有「右側／左側的門發光了！」時只剩一扇可互動，選那扇；沒有就隨機
 --     DUNGEON_DOOR_WAIT 等開門（或關門）動畫結束
@@ -1901,7 +1895,7 @@ local function HandleGamble()
     return true
 end
 
--- 開殘留的寶箱、處理強欲陷阱；最後一次互動後 10 秒沒有新寶箱、強欲陷阱也結束了，才去選門（第 5 層則離開）
+-- 等寶箱自動打開（寶物庫的寶箱不用互動）、處理強欲陷阱；寶箱打開後 10 秒沒有新寶箱、強欲陷阱也結束了，才去選門（第 5 層則離開）
 function Handlers.DUNGEON_LOOT()
     if not InDuty() then return "DUNGEON_EXIT" end
     if Api.Condition(Cond.inCombat) then return "DUNGEON_COMBAT" end   -- 開箱又觸發額外的怪
@@ -1912,12 +1906,9 @@ function Handlers.DUNGEON_LOOT()
         return nil
     end
 
-    if Api.GetEntity(Cfg.DungeonChestName) ~= nil then
-        -- 前 3 秒先讓自動開箱插件開，之後還有殘留的寶箱才由腳本接手
-        if Elapsed() > 3 and not Api.Condition(Cond.occupiedInEvent) and ApproachAndInteract(Cfg.DungeonChestName) then
-            State.lastChestAt = Elapsed()
-        end
-        if TimedOut("DUNGEON_LOOT") then return "ERROR" end
+    -- 寶物庫的寶箱打完怪會自動打開，不用互動：最多等 VAULT_CHEST_WAIT 秒讓它打開（變成不能互動），之後就算還能互動也不管
+    if Api.GetEntity(Cfg.DungeonChestName) ~= nil and Elapsed() < VAULT_CHEST_WAIT then
+        State.lastChestAt = Elapsed()
         return nil
     end
     if Api.Condition(Cond.occupiedInEvent) or Elapsed() - State.lastChestAt < 10 then return nil end

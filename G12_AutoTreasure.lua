@@ -131,8 +131,8 @@ configs:
     default: "傳送魔紋"
     description: 傳送門物件名稱（繁中客戶端）
   ExitPortalName:
-    default: "傳送魔紋"
-    description: 寶物庫第 5 關後離開用的傳送門物件名稱
+    default: "退出點"
+    description: 寶物庫第 5 關後離開用的傳送門物件名稱（實測是「退出點」；找不到這個名稱時腳本也會再找「退出點」）
   EchoLogs:
     default: "All"
     description: 日誌層級 All / Errors / None
@@ -1794,7 +1794,7 @@ end
 --     DUNGEON_DOOR      兩扇「寶物庫的門」選一扇：有「右側／左側的門發光了！」時只剩一扇可互動，選那扇；沒有就隨機
 --     DUNGEON_DOOR_WAIT 等開門（或關門）動畫結束
 --     DUNGEON_PASSAGE   走進打開的門，踩上門後的傳送法陣（不能互動）到下一層
---   第 5 層：DUNGEON_EXIT 找離開用的傳送魔紋
+--   第 5 層：DUNGEON_EXIT 找離開用的傳送門（退出點）
 -- 選錯門被移出寶物庫時，任何一步發現不在寶物庫就轉 DUNGEON_EXIT
 
 -- 場上所有「名稱相符且可選取」的物件（Dalamud 物件）
@@ -2186,7 +2186,7 @@ function Handlers.DUNGEON_R_COMBAT()
 end
 
 -- 開寶箱：可能有多個（自動開箱插件通常會先開完，這裡只處理殘留的），一個一個開；最後一次互動（或一開始就沒寶箱）後等 10 秒，
--- 確定沒有新的寶箱才進下一關（點召喚魔法陣），最多 5 關，第 5 關後去找離開用的傳送魔紋
+-- 確定沒有新的寶箱才進下一關（點召喚魔法陣），最多 5 關，第 5 關後去找離開用的傳送門（ExitPortalName，找不到再找「退出點」）
 function Handlers.DUNGEON_R_CHEST()
     if not InDuty() then return "DUNGEON_EXIT" end
     if State.lastChestAt == nil then State.lastChestAt = Elapsed() end
@@ -2207,7 +2207,17 @@ function Handlers.DUNGEON_R_CHEST()
     return "DUNGEON_EXIT"
 end
 
--- 離開寶物庫：還在寶物庫內就找離開用的傳送魔紋（ExitPortalName）互動並確認；被移出或陣亡結束時直接等回到野外
+-- 離開用的傳送門：先找設定的 ExitPortalName，找不到再找「退出點」（實測第 5 層的名稱）。
+-- SND 把新內容貼進舊腳本時會保留舊設定值（以前預設「傳送魔紋」），所以兩個都找
+local EXIT_POINT_NAME = "退出點"
+local function FindExitPortal()
+    for _, name in ipairs({ Cfg.ExitPortalName, EXIT_POINT_NAME }) do
+        if name ~= nil and name ~= "" and Api.GetEntity(name) ~= nil then return name end
+    end
+    return nil
+end
+
+-- 離開寶物庫：還在寶物庫內就找離開用的傳送門（退出點）互動並確認；被移出或陣亡結束時直接等回到野外
 function Handlers.DUNGEON_EXIT()
     if not InDuty() and not Busy() then
         local reached = math.min(State.stage, MAX_STAGES)
@@ -2217,10 +2227,11 @@ function Handlers.DUNGEON_EXIT()
     end
     if InDuty() and not Busy() and not Api.Condition(Cond.dead) then
         if Api.ConfirmYes() then return nil end
-        if Api.GetEntity(Cfg.ExitPortalName) ~= nil then
-            if not Api.Condition(Cond.occupiedInEvent) then ApproachAndInteract(Cfg.ExitPortalName) end
+        local exitName = FindExitPortal()
+        if exitName ~= nil then
+            if not Api.Condition(Cond.occupiedInEvent) then ApproachAndInteract(exitName) end
         elseif not State.manualPrompted and Elapsed() > 20 then
-            Log("找不到離開用的「" .. Cfg.ExitPortalName .. "」，請確認 ExitPortalName 或手動離開")
+            Log("找不到離開用的「" .. Cfg.ExitPortalName .. "」或「" .. EXIT_POINT_NAME .. "」，請確認 ExitPortalName 或手動離開")
             State.manualPrompted = true
         end
     end

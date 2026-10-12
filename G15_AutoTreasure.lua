@@ -75,7 +75,7 @@ configs:
     description: 野外戰鬥時離寶箱（觸發陷阱的位置）多遠就走回去，太遠陷阱戰鬥會被重置
   FieldLootDelay:
     default: 5
-    description: 野外打完怪後等幾秒再開寶箱
+    description: 野外打完怪後等幾秒再看寶箱（寶箱會自動打開，不用再互動）
   PortalWait:
     default: 10
     description: 開箱後等待傳送門出現的秒數
@@ -222,7 +222,7 @@ local Timeout = {
     OPEN_COFFER      = 15,
     FIELD_COMBAT     = 600,   -- 遊戲戰鬥時限未知，先給寬鬆上限
     FIELD_FIGHT      = 600,
-    LOOT             = 10,
+    LOOT             = 20,    -- 含等寶箱自動打開
     PORTAL_CHECK     = Cfg.PortalWait,
     ENTER_DUNGEON    = 60,
     DEAD             = 120,
@@ -1326,19 +1326,16 @@ local function LeaveCombat()
     State.wrathOn = false
 end
 
--- 野外戰鬥結束：聊天出現「將陷阱引來的魔物全部打倒了！」（OnChatMessage 標記）就去開寶箱。
+-- 野外戰鬥結束：聊天出現「將陷阱引來的魔物全部打倒了！」（OnChatMessage 標記）就去領獎（寶箱會自動打開）。
 -- 野外不主動找敵人，選目標交給 RSR / Wrath。打完又被旁邊的怪纏上，由 FIELD_FIGHT 先打完再回來。
--- 保險：萬一沒收到訊息，脫離戰鬥滿 10 秒也算結束（同樣不索敵）
+-- 保險：萬一沒收到訊息，脫離戰鬥滿 10 秒也算結束（同樣不索敵）。
+-- 不在這裡判斷「寶箱消失」：寶箱自動打開後就不能互動了，傳送魔紋可能還沒出現，交給 LOOT → PORTAL_CHECK
 local function FieldCombatDone(reason)
     State.fieldCleared = false
     Log(reason .. "（等 " .. Cfg.FieldLootDelay .. " 秒）")
     LeaveCombat()
     Api.ClearTarget()
     yield("/wait " .. Cfg.FieldLootDelay)
-    if Api.GetEntity(Cfg.ChestName) == nil and Api.GetEntity(Cfg.PortalName) == nil then
-        Log("寶箱已消失（可能超過戰鬥時限）")
-        return "CHECK_MAP"
-    end
     return "LOOT"
 end
 
@@ -1355,7 +1352,10 @@ function Handlers.FIELD_COMBAT()
     return FieldCombatDone("脫離戰鬥 10 秒（沒收到打倒訊息），去開寶箱")
 end
 
--- 領獎：可能有多個寶箱，還有可互動的寶箱就一個一個開，全部開完才看有沒有傳送魔紋
+-- 領獎：打完怪寶箱會自動打開，不用再互動。等到沒有可互動的寶箱就算完成，再看有沒有傳送魔紋。
+-- 保險：LOOT_AUTO_OPEN_WAIT 秒後還有可互動的寶箱（沒有自動打開），才由腳本互動
+local LOOT_AUTO_OPEN_WAIT = 8
+
 function Handlers.LOOT()
     local chest = Api.GetEntity(Cfg.ChestName)
     local portal = Api.GetEntity(Cfg.PortalName)
@@ -1365,7 +1365,14 @@ function Handlers.LOOT()
         Log("完成第 " .. State.mapsDone .. " 張")
         return "PORTAL_CHECK"
     end
-    if Api.Condition(Cond.occupiedInEvent) then return nil end
+    if Api.Condition(Cond.occupiedInEvent) or Elapsed() < LOOT_AUTO_OPEN_WAIT then
+        if TimedOut("LOOT") then return "ERROR" end
+        return nil
+    end
+    if not State.sent then
+        Log("寶箱沒有自動打開，改由腳本互動")
+        State.sent = true
+    end
     ApproachAndInteract(Cfg.ChestName)
     if TimedOut("LOOT") then
         if portal ~= nil then return "PORTAL_CHECK" end

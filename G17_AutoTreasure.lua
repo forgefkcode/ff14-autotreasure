@@ -280,7 +280,7 @@ local Timeout = {
     OPEN_COFFER      = 15,
     FIELD_COMBAT     = 600,   -- 遊戲戰鬥時限未知，先給寬鬆上限
     FIELD_FIGHT      = 600,
-    LOOT             = 10,
+    LOOT             = 20,    -- 含確認框
     PORTAL_CHECK     = Cfg.PortalWait,
     ENTER_DUNGEON    = 60,
     DEAD             = 120,
@@ -1429,7 +1429,8 @@ function Handlers.FIELD_COMBAT()
     return FieldCombatDone("脫離戰鬥 10 秒（沒收到打倒訊息），去開寶箱")
 end
 
--- 領獎：可能有多個寶箱，還有可互動的寶箱就一個一個開，全部開完才看有沒有傳送魔紋
+-- 領獎：可能有多個寶箱，還有可互動的寶箱就一個一個開，全部開完才看有沒有傳送魔紋。
+-- 開寶箱前就先出怪的情況，打完後互動寶箱會跳確認框，要按「是」才會打開
 function Handlers.LOOT()
     local chest = Api.GetEntity(Cfg.ChestName)
     local portal = Api.GetEntity(Cfg.PortalName)
@@ -1439,6 +1440,12 @@ function Handlers.LOOT()
         Log("完成第 " .. State.mapsDone .. " 張")
         return "PORTAL_CHECK"
     end
+    -- 按「是」之後等 3 秒讓寶箱打開，不要馬上又互動（會再跳確認框、打斷開箱）
+    if Api.ConfirmYes() then
+        State.lastClick = Elapsed()
+        return nil
+    end
+    if State.lastClick ~= nil and Elapsed() - State.lastClick < 3 then return nil end
     if Api.Condition(Cond.occupiedInEvent) then return nil end
     ApproachAndInteract(Cfg.ChestName)
     if TimedOut("LOOT") then

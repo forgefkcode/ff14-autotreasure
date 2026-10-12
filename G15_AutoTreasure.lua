@@ -79,6 +79,9 @@ configs:
   LeashRadius:
     default: 15
     description: 野外戰鬥時離寶箱（觸發陷阱的位置）多遠就走回去，太遠陷阱戰鬥會被重置
+  FieldLootDelay:
+    default: 5
+    description: 野外打完怪後等幾秒再開寶箱
   PortalWait:
     default: 10
     description: 開箱後等待傳送門出現的秒數
@@ -87,7 +90,7 @@ configs:
     description: 寶物庫戰鬥開始後最多等幾秒找敵人（G15 會先播 30 秒以上的輪盤動畫，怪物之後才出現）
   EnemySearchRange:
     default: 100
-    description: 寶物庫內找敵人的範圍（選最近的敵人、確認是否打完都用這個）
+    description: 寶物庫內掃描敵人的範圍（判斷怪物出現、是否打完；不會選取目標）
   UseSprint:
     default: false
     description: 移動時是否使用衝刺
@@ -196,6 +199,7 @@ local Cfg = {
     WalkRadius       = Config.Get("WalkRadius"),
     DigRadius        = Config.Get("DigRadius"),
     LeashRadius      = Config.Get("LeashRadius"),
+    FieldLootDelay   = Config.Get("FieldLootDelay"),
     PortalWait       = Config.Get("PortalWait"),
     RouletteWait     = Config.Get("RouletteWait"),
     EnemySearchRange = Config.Get("EnemySearchRange"),
@@ -553,8 +557,7 @@ function Api.ClearTarget()
     if not ok then yield("/send ESCAPE") end
 end
 
--- 選取最近的敵人（SND 內建 /targetenemy：最近、可選取、還活著的敵對目標），只選一次不鎖定
--- 掃描全場物件，找 maxDistance 內最近的敵人：戰鬥 NPC、敵人類（SubKind 5 = Enemy）、可選取、還活著。
+-- 掃描全場物件（不選取目標），找 maxDistance 內最近的敵人：戰鬥 NPC、敵人類（SubKind 5 = Enemy）、可選取、還活著。
 -- 回傳 Dalamud 物件或 nil
 function Api.NearestEnemyObject(maxDistance)
     local ok, obj = pcall(function()
@@ -576,32 +579,9 @@ function Api.NearestEnemyObject(maxDistance)
     return nil
 end
 
--- 選最近的敵人一次（不鎖定）：先用自己的掃描（maxDistance 內），找不到再用 SND 的 /targetenemy
-function Api.TargetNearestEnemy(maxDistance)
-    Api.ClearTarget()   -- 先解除舊選取（例如召喚魔法陣、寶箱），選不到敵人時才不會誤判成已選到
-    yield("/wait 0.1")
-    local o = Api.NearestEnemyObject(maxDistance or 100)
-    if o ~= nil and pcall(function() Svc.Targets.Target = o end) then
-        yield("/wait 0.1")
-        if Entity.Target ~= nil then return true end
-    end
-    yield("/targetenemy")
-    yield("/wait 0.1")
-    return Entity.Target ~= nil
-end
-
--- 選最近的敵人一次，之後交給 Wrath 打（不施放起手技能）
-function Api.EngageNearestEnemy(maxDistance)
-    return Api.TargetNearestEnemy(maxDistance)
-end
-
--- maxDistance 內還有沒有敵人：先解除選取再 /targetenemy，選到且夠近才算（太遠的野外怪不算，並取消選取）
+-- maxDistance 內還有沒有敵人：只掃描場上物件，不選取目標（選目標交給 RSR，避免衝突）
 function Api.AnyEnemyLeft(maxDistance)
-    if not Api.TargetNearestEnemy(maxDistance) then return false end
-    local t = Entity.Target
-    if t ~= nil and t.DistanceTo ~= nil and t.DistanceTo <= maxDistance then return true end
-    Api.ClearTarget()
-    return false
+    return Api.NearestEnemyObject(maxDistance) ~= nil
 end
 
 function Api.GeneralAction(id)
@@ -1083,8 +1063,11 @@ function Handlers.CHECK_MAP()
             State.badWorlds = {}
         end
         if State.roundBuying then
-            if Cfg.CrossWorld and not State.worldChosen then return "PICK_WORLD" end
-            if not hasUndeciphered then return "MB_TRAVEL" end
+            -- 每次要買圖前都重新比價（第一張、第二張都去當下最便宜的伺服器）
+            if not hasUndeciphered then
+                if Cfg.CrossWorld and not State.worldChosen then return "PICK_WORLD" end
+                return "MB_TRAVEL"
+            end
             if not hasDeciphered then
                 State.retries = 0
                 return "DECIPHER"
@@ -1333,11 +1316,7 @@ local function CombatTick()
     if t ~= nil and (t.Name == Cfg.ChestName or t.Name == Cfg.DungeonChestName) then
         Api.ClearTarget()
     end
-    -- 寶物庫戰鬥開始時選一次最近的敵人，之後交給 RSR / Wrath，不保持鎖定；野外不索敵，選目標全交給 RSR / Wrath
-    if InDuty() and not State.combatTargeted then
-        Api.EngageNearestEnemy(Cfg.EnemySearchRange)
-        State.combatTargeted = true
-    end
+    -- 不主動選目標：選目標全部交給 RSR / Wrath（腳本先鎖定會跟 RSR 衝突）
     if not State.wrathOn then
         Api.NavStop()
         Api.WrathOn()
@@ -1355,9 +1334,10 @@ end
 -- 保險：萬一沒收到訊息，脫離戰鬥滿 10 秒也算結束（同樣不索敵）
 local function FieldCombatDone(reason)
     State.fieldCleared = false
-    Log(reason)
+    Log(reason .. "（等 " .. Cfg.FieldLootDelay .. " 秒）")
     LeaveCombat()
     Api.ClearTarget()
+    yield("/wait " .. Cfg.FieldLootDelay)
     if Api.GetEntity(Cfg.ChestName) == nil and Api.GetEntity(Cfg.PortalName) == nil then
         Log("寶箱已消失（可能超過戰鬥時限）")
         return "CHECK_MAP"
@@ -1440,7 +1420,7 @@ local INTERRUPTIBLE = {
     LOOT = true, PORTAL_CHECK = true, ENTER_DUNGEON = true,
 }
 
--- 先打完周圍的怪：下坐騎、選最近的敵人並按 1、開 Wrath；脫離戰鬥滿 3 秒就回到被打斷的步驟
+-- 先打完周圍的怪：下坐騎、開自動輸出（選目標交給 RSR / Wrath）；脫離戰鬥滿 3 秒就回到被打斷的步驟
 function Handlers.FIELD_FIGHT()
     if Api.Condition(Cond.dead) then LeaveCombat(); return "DEAD" end
     if Api.Condition(Cond.inCombat) then
@@ -1657,6 +1637,9 @@ function Handlers.MB_BUY()
     if Api.ItemCount(Cfg.MapItemId) > State.mapCountBefore then
         State.mapsBought = (State.mapsBought or 0) + Api.ItemCount(Cfg.MapItemId) - State.mapCountBefore
         State.gilSpent = (State.gilSpent or 0) + State.buyPrice
+        -- 下一張圖要重新比價
+        State.worldChosen = false
+        State.badWorlds = {}
         -- 每次只買 1 張：買完一定先關市場板，解讀需要在市場板關閉後才能進行
         return "MB_CLOSE"
     end
@@ -1740,14 +1723,13 @@ function Handlers.DUNGEON_SPHERE()
     if TimedOut("DUNGEON_SPHERE") then return "ERROR" end
 end
 
--- 輪盤停下、怪物出現後，選最近的敵人開打（怪物不一定會主動攻擊），每 2 秒找一次
+-- 輪盤停下、怪物出現後開啟自動輸出開打（怪物不一定會主動攻擊），每 2 秒掃描一次（不選取目標）
 function Handlers.DUNGEON_ROULETTE()
     if not InDuty() then return "DUNGEON_EXIT" end
     if Api.Condition(Cond.inCombat) then return "DUNGEON_COMBAT" end
     if Elapsed() > 2 and Elapsed() - (State.lastEnemyScan or -10) > 2 then
         State.lastEnemyScan = Elapsed()
-        if Api.EngageNearestEnemy(Cfg.EnemySearchRange) then
-            State.combatTargeted = true
+        if Api.NearestEnemyObject(Cfg.EnemySearchRange) ~= nil then
             Api.WrathOn()
             return "DUNGEON_COMBAT"
         end
@@ -1762,17 +1744,14 @@ function Handlers.DUNGEON_COMBAT()
         return "DUNGEON_EXIT"
     end
     if not InDuty() then LeaveCombat(); return "DUNGEON_EXIT" end
-    -- 一進入就選最近的敵人。G15 進入時會先播輪盤動畫（30 秒以上），怪物動畫結束才出現：
-    -- 每秒重試，最多等 RouletteWait 秒；選到後交給 Wrath，不保持鎖定
+    -- 等怪物出現（可能有動畫，G15 輪盤要 30 秒以上）：只掃描有沒有敵人、不選取目標，選目標交給 RSR；
+    -- 進入戰鬥或看到敵人就開始，最多等 RouletteWait 秒
     if not State.combatTargeted then
-        if Elapsed() - (State.lastEnemyScan or -10) >= 1 then
-            State.lastEnemyScan = Elapsed()
-            if Api.EngageNearestEnemy(Cfg.EnemySearchRange) then
-                State.combatTargeted, State.enemySeen = true, true
-                Log("選取最近的敵人")
-            elseif Elapsed() > Cfg.RouletteWait then
-                State.combatTargeted = true
-            end
+        if Api.Condition(Cond.inCombat) or Api.NearestEnemyObject(Cfg.EnemySearchRange) ~= nil then
+            State.combatTargeted, State.enemySeen = true, true
+            Log("敵人出現，交給自動輸出打")
+        elseif Elapsed() > Cfg.RouletteWait then
+            State.combatTargeted = true
         end
         if not State.wrathOn then Api.WrathOn() end
         return nil

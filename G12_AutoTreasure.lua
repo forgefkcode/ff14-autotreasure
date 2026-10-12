@@ -1844,11 +1844,31 @@ end
 -- 跑到這一層的寶箱並互動（ApproachAndInteract 會先用 vnavmesh 走過去），再看寶箱的反應：
 --   出怪（進入戰鬥或掃到敵人）→ DUNGEON_COMBAT；強欲陷阱 → DUNGEON_LOOT；寶箱直接打開 → DUNGEON_LOOT
 --   沒反應 → 再互動，最多 CHEST_INTERACT_TRIES 次；這層找不到寶箱超過 CHEST_SEARCH_WAIT 秒 → 跳過，交給 DUNGEON_LOOT 收尾
-local FLOOR_SETTLE         = 1.5  -- 進入這一層的動畫結束、可以操作後，再等幾秒才開始動
-local CHEST_SEARCH_WAIT    = 15   -- 可以操作後找不到寶箱等幾秒（樓層可能還在載入）
+local VAULT_ENTRY_WAIT     = 10   -- 剛進寶物庫（第 1 層）可以操作後，先等幾秒才往寶箱走（實測要等）
+local FLOOR_SETTLE         = 1.5  -- 第 2 層以後：進入這一層的動畫結束、可以操作後，再等幾秒才開始動
+local CHEST_SEARCH_WAIT    = 15   -- 開始動之後找不到寶箱再等幾秒（樓層可能還在載入），之後跳過
+local CHEST_FAR_RANGE      = 60   -- 還不能互動的寶箱在這個距離內，就先走到它旁邊
 local CHEST_REACT_WAIT     = 8    -- 互動後等寶箱反應幾秒，還能互動就再互動一次
 local CHEST_SETTLE         = 3    -- 寶箱不能互動後至少再等幾秒才判定「直接打開」（怪物出現可能有動畫）
 local CHEST_INTERACT_TRIES = 3
+
+-- 名稱相符的物件裡最近的一個（不管能不能互動），回傳物件和平面距離。
+-- 寶箱離入口有一段距離、還不能互動時（Api.GetEntity 只找可互動的），用它的位置先走過去
+local function NearestNamedObject(name)
+    local me = Api.PlayerPos()
+    local best, bestDist = nil, math.huge
+    local objs = Svc.Objects
+    for i = 0, objs.Length - 1 do
+        local o = objs[i]
+        if o ~= nil and o.Name.TextValue == name then
+            local dx, dz = o.Position.X - me.X, o.Position.Z - me.Z
+            local d = dx * dx + dz * dz
+            if d < bestDist then best, bestDist = o, d end
+        end
+    end
+    if best == nil then return nil, nil end
+    return best, math.sqrt(bestDist)
+end
 
 function Handlers.DUNGEON_CHEST()
     if not InDuty() then return "DUNGEON_EXIT" end
@@ -1863,17 +1883,35 @@ function Handlers.DUNGEON_CHEST()
     if State.floorReadyAt == nil then
         if not Api.PlayerReady() or Api.Condition(Cond.occupiedInEvent) then return nil end
         State.floorReadyAt = Elapsed()
-        Log("第 " .. State.stage .. " 層：可以操作了，去找寶箱")
+        if State.stage == 1 then
+            Log("進入寶物庫，等 " .. VAULT_ENTRY_WAIT .. " 秒再走去寶箱")
+        else
+            Log("第 " .. State.stage .. " 層：可以操作了，去找寶箱")
+        end
     end
-    if Elapsed() - State.floorReadyAt < FLOOR_SETTLE then return nil end
+    local settle = State.stage == 1 and VAULT_ENTRY_WAIT or FLOOR_SETTLE
+    if Elapsed() - State.floorReadyAt < settle then return nil end
     if Api.ConfirmYes() then return nil end
 
     local chest = Api.GetEntity(Cfg.DungeonChestName)
 
-    -- 還沒互動：寶箱離入口有一段距離，ApproachAndInteract 會先用 vnavmesh 走過去再互動；找不到寶箱先等一下，太久就跳過
+    -- 還沒互動：寶箱離入口有一段距離，先走到寶箱附近再互動（可互動的用 ApproachAndInteract；
+    -- 還不能互動的就用它的位置走過去，到了旁邊變成可互動再互動）。完全找不到寶箱先等一下，太久就跳過
     if State.chestInteractAt == nil then
         if chest == nil then
-            if Elapsed() - State.floorReadyAt < CHEST_SEARCH_WAIT then return nil end
+            local far, dist = NearestNamedObject(Cfg.DungeonChestName)
+            if far ~= nil and dist > 3 and dist <= CHEST_FAR_RANGE then
+                if not State.chestLogged then
+                    Log(string.format("寶箱在 %.0f 外（還不能互動），先走到旁邊", dist))
+                    State.chestLogged = true
+                end
+                if not Api.NavRunning() then
+                    Api.NavMoveTo(Api.PointOnFloor(far.Position.X, far.Position.Z) or far.Position, false)
+                end
+                if TimedOut("DUNGEON_CHEST") then return "ERROR" end
+                return nil
+            end
+            if Elapsed() - State.floorReadyAt < settle + CHEST_SEARCH_WAIT then return nil end
             Log("這層找不到「" .. Cfg.DungeonChestName .. "」（請確認 DungeonChestName），直接收尾")
             return "DUNGEON_LOOT"
         end

@@ -1836,7 +1836,8 @@ end
 -- 跑到這一層的寶箱並互動（ApproachAndInteract 會先用 vnavmesh 走過去），再看寶箱的反應：
 --   出怪（進入戰鬥或掃到敵人）→ DUNGEON_COMBAT；強欲陷阱 → DUNGEON_LOOT；寶箱直接打開 → DUNGEON_LOOT
 --   沒反應 → 再互動，最多 CHEST_INTERACT_TRIES 次；這層找不到寶箱超過 CHEST_SEARCH_WAIT 秒 → 跳過，交給 DUNGEON_LOOT 收尾
-local CHEST_SEARCH_WAIT    = 15   -- 進來後找不到寶箱等幾秒（樓層可能還在載入）
+local FLOOR_SETTLE         = 1.5  -- 進入這一層的動畫結束、可以操作後，再等幾秒才開始動
+local CHEST_SEARCH_WAIT    = 15   -- 可以操作後找不到寶箱等幾秒（樓層可能還在載入）
 local CHEST_REACT_WAIT     = 8    -- 互動後等寶箱反應幾秒，還能互動就再互動一次
 local CHEST_SETTLE         = 3    -- 寶箱不能互動後至少再等幾秒才判定「直接打開」（怪物出現可能有動畫）
 local CHEST_INTERACT_TRIES = 3
@@ -1848,16 +1849,29 @@ function Handlers.DUNGEON_CHEST()
         Log("開寶箱觸發強欲陷阱")
         return "DUNGEON_LOOT"
     end
+
+    -- 進入這一層會有一段不能操作的動畫：等到角色可以操作才開始，只等這一次
+    -- （之後不再檢查：走路中 Player.IsBusy 也可能是 true）
+    if State.floorReadyAt == nil then
+        if not Api.PlayerReady() or Api.Condition(Cond.occupiedInEvent) then return nil end
+        State.floorReadyAt = Elapsed()
+        Log("第 " .. State.stage .. " 層：可以操作了，去找寶箱")
+    end
+    if Elapsed() - State.floorReadyAt < FLOOR_SETTLE then return nil end
     if Api.ConfirmYes() then return nil end
 
     local chest = Api.GetEntity(Cfg.DungeonChestName)
 
-    -- 還沒互動：走過去互動；找不到寶箱先等一下，太久就跳過
+    -- 還沒互動：寶箱離入口有一段距離，ApproachAndInteract 會先用 vnavmesh 走過去再互動；找不到寶箱先等一下，太久就跳過
     if State.chestInteractAt == nil then
         if chest == nil then
-            if Elapsed() < CHEST_SEARCH_WAIT then return nil end
+            if Elapsed() - State.floorReadyAt < CHEST_SEARCH_WAIT then return nil end
             Log("這層找不到「" .. Cfg.DungeonChestName .. "」（請確認 DungeonChestName），直接收尾")
             return "DUNGEON_LOOT"
+        end
+        if not State.chestLogged then
+            Log(string.format("寶箱在 %.0f 外，走過去", Distance2D(Api.PlayerPos(), chest.Position)))
+            State.chestLogged = true
         end
         if not Api.Condition(Cond.occupiedInEvent) and ApproachAndInteract(Cfg.DungeonChestName) then
             State.chestInteractAt, State.chestTries = Elapsed(), State.chestTries + 1
@@ -2065,7 +2079,8 @@ function Handlers.DUNGEON_PASSAGE()
         end
     end
 
-    if not Api.NavRunning() then
+    -- 踩上法陣後有一段不能操作的動畫：動畫中不要再下移動指令（不然每次都會再往前 4，越走越遠）
+    if not Api.NavRunning() and Api.PlayerReady() and not Api.Condition(Cond.occupiedInEvent) then
         State.passTries = (State.passTries or 0) + 1
         local d, f = State.doorPos, State.doorFrom
         local dx, dz = d.X - f.X, d.Z - f.Z
@@ -2248,7 +2263,7 @@ local function Transition(next)
     State.combatTargeted, State.lastEnemyScan, State.lastInCombat, State.enemySeen = false, nil, nil, false
     State.favTries = 0
     State.lastChestAt = nil
-    State.chestInteractAt, State.chestTries = nil, 0
+    State.chestInteractAt, State.chestTries, State.floorReadyAt, State.chestLogged = nil, 0, nil, false
     State.passLastPos, State.passTries = nil, 0
     if next == "DUNGEON_CHEST" then State.doorHint, State.gambleActive = nil, false end
     State.spotLogged = nil

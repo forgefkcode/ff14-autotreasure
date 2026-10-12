@@ -4,11 +4,13 @@ SND（Something Need Doing）Lua 腳本，戰士單人循環挖寶與寶物庫�
 
 | 腳本 | 狀態 | 地圖 | 藏寶地區 | 寶物庫 |
 | --- | --- | --- | --- | --- |
+| [G12_AutoTreasure.lua](G12_AutoTreasure.lua) | 新寫，尚未實測（由 G15 / G17 組合） | Timeworn Zonureskin Map | 漆黑版 6 區（Lakeland、Kholusia、Amh Araeng、Il Mheg、The Rak'tika Greatwood、The Tempest） | Lyhe Ghiah：進去才知道是選門型（The Dungeons）或轉盤型（The Shifting Oubliettes），依地區自動分流 |
 | [G15_AutoTreasure.lua](G15_AutoTreasure.lua) | 實測調整中 | 陳舊的地圖G15（Timeworn Ophiotauroskin Map） | 厄爾庇斯 | The Shifting Gymnasion Agonon（輪盤型，5 關） |
 | [G17_AutoTreasure.lua](G17_AutoTreasure.lua) | 由 G15 改寫（寶物庫為選門流程），尚未實測 | 陳舊的地圖G17（Timeworn Br'aaxskin Map，8 人圖） | 黃金版 5 區（Living Memory 除外） | Cenote Ja Ja Gural（選門型，5 關） |
 
 直接下載（貼進 SND）：
 
+- G12：https://raw.githubusercontent.com/forgefkcode/ff14-autotreasure/main/G12_AutoTreasure.lua
 - G15：https://raw.githubusercontent.com/forgefkcode/ff14-autotreasure/main/G15_AutoTreasure.lua
 - G17：https://raw.githubusercontent.com/forgefkcode/ff14-autotreasure/main/G17_AutoTreasure.lua
 
@@ -54,6 +56,15 @@ G15 目前實測使用的組合（感謝兩位大神）：
 - 門後的傳送法陣不能互動、沒有名稱：穿過門再往前 `PassageDistance`；角色被傳送（位置瞬間跳動）就算到下一層
 - 強欲陷阱（大／小魔法球）依 `GambleMode` 處理：`Ignore`（預設，不互動）/ `Big` / `Small`
 
+## G12 寶物庫（Lyhe Ghiah，選門型或轉盤型）
+
+G12 的寶物庫進去之後才知道是哪一種，腳本進入時依所在地區判斷並分流：
+
+- 地區 879 The Dungeons of Lyhe Ghiah → 選門型，流程同 G17（跑到寶箱 → 打怪 → 開寶箱 → 選門 → 走進門到下一層）
+- 地區 924 The Shifting Oubliettes of Lyhe Ghiah → 轉盤型，流程同 G15（點召喚魔法陣 → 等輪盤 → 打怪 → 開寶箱 → 下一關）
+
+兩種都是最多 5 關／層。
+
 ## 使用前準備
 
 - **自動買圖必做：** 在市場板把要買的地圖（G15「陳舊的地圖G15」、G17「陳舊的地圖G17」等，以遊戲內名稱為準）加入「我的最愛」，腳本會在我的最愛清單裡依名稱找到它並點開；沒加入的話買圖會卡在搜尋步驟
@@ -65,6 +76,7 @@ G15 目前實測使用的組合（感謝兩位大神）：
 
 - G17：`ChestName`、`PortalName`、`DoorName`；
 - G15：`ChestName`、`PortalName`、`SphereName`
+- G12：`ChestName`、`PortalName`、`DoorName`、`SphereName`（兩種寶物庫的物件名稱都要對）
 
 ## 狀態
 

@@ -2038,7 +2038,8 @@ function Handlers.ERROR()
     StopAutomation()
     State.errors = State.errors + 1
     State.errorCount = State.errorCount + 1
-    LogError("狀態 " .. tostring(State.errorFrom) .. " 失敗（連續 " .. State.errors .. "/" .. Cfg.MaxErrors .. "）")
+    LogError(string.format("狀態 %s 失敗（在該步驟第 %.0f 秒，連續 %d/%d）",
+        tostring(State.errorFrom), State.errorAfter or 0, State.errors, Cfg.MaxErrors))
     -- 清掉各狀態的暫存旗標
     State.tmapSent, State.teleportSent = false, false, false
     State.digSent, State.chestOpened, State.rouletteStarted = false, false, false
@@ -2064,7 +2065,7 @@ local function Transition(next)
     if next == nil or next == State.current and next ~= "DECIPHER" and next ~= "DIG" then
         return
     end
-    if next == "ERROR" then State.errorFrom = State.current end
+    if next == "ERROR" then State.errorFrom, State.errorAfter = State.current, Elapsed() end
     if next == "TRAVEL" then State.cofferPos, State.leashing = nil, false end
     if next == "OPEN_COFFER" then State.fieldCleared = false end
     Log(State.current .. " → " .. next)

@@ -8,7 +8,7 @@ plugin_dependencies:
 - Lifestream
 function_chat_filters:
   OnChatMessage:
-    message_regex: "將陷阱引來的魔物全部打倒了|門發光了|強欲陷阱發動了|#繼續"
+    message_regex: "將陷阱引來的魔物全部打倒了|門發光了|強欲陷阱發動了|#繼續|發動了.*召喚"
 configs:
   MaxRounds:
     default: 0
@@ -317,7 +317,7 @@ local Timeout = {
     DUNGEON_DOOR_WAIT = 60,
     DUNGEON_PASSAGE  = 60,
     DUNGEON_SPHERE   = 15,
-    DUNGEON_ROULETTE = 90,    -- 輪盤動畫 30 秒以上
+    DUNGEON_ROULETTE = 150,  -- 輪盤動畫 30 秒以上，加上頭目登場動畫；逾時不報錯，改到戰鬥步驟等
     DUNGEON_R_COMBAT = 3600,  -- 副本限時 60 分鐘
     DUNGEON_R_CHEST  = 120,
     DUNGEON_EXIT     = 180,
@@ -1015,6 +1015,7 @@ end
 --   「將陷阱引來的魔物全部打倒了！」→ 野外陷阱打完，去開寶箱
 --   「右側的門發光了！」「左側的門發光了！」→ 寶物庫裡只會剩一扇門可以互動，選那扇
 --   「強欲陷阱發動了！」→ 出現大／小兩顆魔法球，依 GambleMode 處理
+--   「發動了中級召喚，…出現了！」之類 → 轉盤型寶物庫輪盤停下、怪物出現
 function OnChatMessage()
     local ok, msg = pcall(function() return tostring(TriggerData.message) end)
     if not ok or msg == nil then return end
@@ -1026,6 +1027,8 @@ function OnChatMessage()
         State.doorHint = "左側"
     elseif msg:find("強欲陷阱發動了", 1, true) then
         State.gambleActive = true
+    elseif msg:find("發動了", 1, true) and msg:find("召喚", 1, true) then
+        State.summoned = true   -- 轉盤型：「發動了中級召喚，…出現了！」輪盤停下、怪物出現
     elseif msg:match("^%s*#繼續%s*$") then
         State.resumeRequested = true   -- 你在聊天框輸入 /echo #繼續（整行只有這幾個字；腳本自己的提示訊息開頭是 [G12]，不會觸發）
     end
@@ -2249,18 +2252,28 @@ function Handlers.DUNGEON_SPHERE()
     if TimedOut("DUNGEON_SPHERE") then return "ERROR" end
 end
 
--- 輪盤停下、怪物出現後開啟自動輸出開打（怪物不一定會主動攻擊），每 2 秒掃描一次（不選取目標）
+-- 輪盤停下、怪物出現後開啟自動輸出開打（怪物不一定會主動攻擊），每 2 秒掃描一次（不選取目標）。
+-- 聊天出現「發動了…召喚，…出現了！」（OnChatMessage 標記）也算怪物出現：頭目登場動畫中可能還不能選取、掃描不到
 function Handlers.DUNGEON_ROULETTE()
     if not InDuty() then return "DUNGEON_EXIT" end
     if Api.Condition(Cond.inCombat) then return "DUNGEON_R_COMBAT" end
+    if State.summoned then
+        Log("召喚完成，怪物出現")
+        if not State.wrathOn then Api.WrathOn() end
+        return "DUNGEON_R_COMBAT"
+    end
     if Elapsed() > 2 and Elapsed() - (State.lastEnemyScan or -10) > 2 then
         State.lastEnemyScan = Elapsed()
         if Api.NearestEnemyObject(Cfg.EnemySearchRange) ~= nil then
-            Api.WrathOn()
+            if not State.wrathOn then Api.WrathOn() end
             return "DUNGEON_R_COMBAT"
         end
     end
-    if TimedOut("DUNGEON_ROULETTE") then return "ERROR" end
+    -- 等太久也不要報錯（報錯會離開寶物庫、放棄後面的關卡）：改到戰鬥步驟繼續等敵人
+    if TimedOut("DUNGEON_ROULETTE") then
+        Log("輪盤等了 " .. Timeout.DUNGEON_ROULETTE .. " 秒還沒看到怪物，改到戰鬥步驟繼續等")
+        return "DUNGEON_R_COMBAT"
+    end
 end
 
 function Handlers.DUNGEON_R_COMBAT()
@@ -2359,7 +2372,8 @@ function Handlers.ERROR()
     StopAutomation()
     State.errors = State.errors + 1
     State.errorCount = State.errorCount + 1
-    LogError("狀態 " .. tostring(State.errorFrom) .. " 失敗（連續 " .. State.errors .. "/" .. Cfg.MaxErrors .. "）")
+    LogError(string.format("狀態 %s 失敗（在該步驟第 %.0f 秒，連續 %d/%d）",
+        tostring(State.errorFrom), State.errorAfter or 0, State.errors, Cfg.MaxErrors))
     -- 清掉各狀態的暫存旗標
     State.tmapSent, State.teleportSent = false, false, false
     State.digSent, State.chestOpened, State.rouletteStarted = false, false, false
@@ -2385,9 +2399,10 @@ local function Transition(next)
     if next == nil or next == State.current and next ~= "DECIPHER" and next ~= "DIG" then
         return
     end
-    if next == "ERROR" then State.errorFrom = State.current end
+    if next == "ERROR" then State.errorFrom, State.errorAfter = State.current, Elapsed() end
     if next == "TRAVEL" then State.cofferPos, State.leashing = nil, false end
     if next == "OPEN_COFFER" then State.fieldCleared = false end
+    if next == "DUNGEON_SPHERE" then State.summoned = false end
     Log(State.current .. " → " .. next)
     State.current = next
     State.enteredAt = os.clock()

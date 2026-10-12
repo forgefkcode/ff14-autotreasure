@@ -24,7 +24,7 @@ configs:
     description: 自動輸出插件：Auto（有 RotationSolver Reborn 用 RSR，否則用 Wrath Combo）/ RotationSolver / WrathCombo
   BossModPlugin:
     default: "Auto"
-    description: 閃避插件：Auto（有 BossMod 用 BossMod，否則用 BossMod Reborn）/ BossMod / BossModReborn。只開 AI 閃避，寶物庫戰鬥中才開
+    description: 閃避插件：Auto（G12 優先 BossMod Reborn，沒有才用 BossMod）/ BossModReborn / BossMod。只開 AI 閃避（BMR 的自動循環會停用），寶物庫戰鬥中才開
   CrossWorld:
     default: true
     description: 每次買圖前（一輪買 2 張、查 2 次）查 Universalis，傳送到資料中心內地圖最便宜的伺服器買圖並挖寶（需要 Lifestream）
@@ -1067,14 +1067,14 @@ function Handlers.INIT()
     if hasRsr and hasWrath then Log("提醒：RotationSolver 和 Wrath Combo 同時啟用，兩個會搶著放技能，建議只開一個") end
     State.rotation = rotation
 
-    -- 閃避插件：BossMod（/vbm ai on|off）或 BossMod Reborn（/bmrai on|off），只用 AI 閃避、寶物庫戰鬥中才開
+    -- 閃避插件：BossMod Reborn（/bmrai on|off）或 BossMod（/vbm ai on|off），只用 AI 閃避、寶物庫戰鬥中才開。G12 的 Auto 優先 BMR
     local hasVbm, hasBmr = Api.PluginInstalled("BossMod"), Api.PluginInstalled("BossModReborn")
     local choice = Cfg.BossModPlugin or "Auto"
     local bossCmd = nil
-    if choice == "BossMod" or (choice == "Auto" and hasVbm) then
-        bossCmd = hasVbm and "/vbm" or nil
-    elseif choice == "BossModReborn" or (choice == "Auto" and hasBmr) then
+    if choice == "BossModReborn" or (choice == "Auto" and hasBmr) then
         bossCmd = hasBmr and "/bmr" or nil
+    elseif choice == "BossMod" or (choice == "Auto" and hasVbm) then
+        bossCmd = hasVbm and "/vbm" or nil
     end
     if bossCmd == nil then
         LogError("沒有偵測到啟用中的 BossMod Reborn / BossMod（設定：" .. choice .. "）")
@@ -1082,8 +1082,16 @@ function Handlers.INIT()
     end
     if hasVbm and hasBmr then Log("提醒：BossMod 和 BossMod Reborn 同時啟用，兩個會搶著閃避，建議只開一個") end
     State.bossCmd = bossCmd
-    -- 清掉 BossMod / BMR 自己的自動輸出預設，避免跟 RSR / Wrath 搶著放技能；它們只負責 AI 閃避
-    yield(bossCmd .. " ar clear")
+    -- 停用 BossMod / BMR 自己的自動循環，避免跟 RSR / Wrath 搶著放技能；它們只負責 AI 閃避
+    if bossCmd == "/bmr" then
+        -- /bmr ar disable：自動循環強制停用。
+        -- /bmrai setpresetname null：清掉「AI 自動循環預設」（會存進 BMR 設定）。不清的話 /bmrai on 時 AI 每一幀都會
+        -- 把自動循環換成這個預設，BMR 會自己放技能、自己選目標，跟 RSR 衝突
+        yield("/bmr ar disable")
+        yield("/bmrai setpresetname null")
+    else
+        yield(bossCmd .. " ar clear")
+    end
     Log("輸出：" .. (rotation == "RotationSolver" and "RotationSolver Reborn" or "Wrath Combo")
         .. "；閃避：" .. (bossCmd == "/bmr" and "BossMod Reborn" or "BossMod") .. " AI（只在寶物庫戰鬥中開）")
     if Cfg.MapItemId == 0 then

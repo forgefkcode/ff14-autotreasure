@@ -17,7 +17,6 @@ SND（Something Need Doing）Lua 腳本，戰士單人循環挖寶與寶物庫�
 測試工具（`tools/`）：
 
 - 市場板搜尋診斷：https://raw.githubusercontent.com/forgefkcode/ff14-autotreasure/main/tools/MarketSearchTest.lua
-- 喝藥測試：https://raw.githubusercontent.com/forgefkcode/ff14-autotreasure/main/tools/PotionTest.lua
 - 強欲陷阱診斷：https://raw.githubusercontent.com/forgefkcode/ff14-autotreasure/main/tools/GambleTest.lua
 
 ## 需求
@@ -42,9 +41,10 @@ G15 目前實測使用的組合（感謝兩位大神）：
 
 ## 跨伺服器買圖
 
-`CrossWorld` 開啟時（預設開），每輪開始前會查 [Universalis](https://universalis.app) 上 `DataCenter`（預設「陸行鳥」）內這張地圖最便宜的單張上架，用 Lifestream 傳送到那個伺服器買圖並在那裡挖寶。
+`CrossWorld` 開啟時（預設開），每次買圖前都會查 [Universalis](https://universalis.app) 上 `DataCenter`（預設「陸行鳥」）內這張地圖最便宜的單張上架，用 Lifestream 傳送到那個伺服器買圖並在那裡挖寶。
 
-- 一輪 = 買齊 1 張已解讀 + 1 張未解讀，兩張都挖完、身上完全沒圖時才重新比價
+- 一輪 = 買齊 1 張已解讀 + 1 張未解讀，兩張都挖完、身上完全沒圖時開始下一輪
+- 每次買圖前都重新比價（一輪查 2 次）：比價 → 買 1 張 → 關市場板 → 解讀 → 再比價 → 買 1 張 → 關市場板 → 出發挖寶
 - Universalis 的價格是玩家上傳的，可能有延遲；到了之後實際價格超過 `MaxMapPrice` 或已被買走，會排除該伺服器、改去下一個最便宜的
 - 查不到價格（網路問題、沒有符合條件的上架）時，留在目前伺服器照常買
 

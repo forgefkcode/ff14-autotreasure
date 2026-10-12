@@ -27,7 +27,7 @@ configs:
     description: 閃避插件：Auto（有 BossMod 用 BossMod，否則用 BossMod Reborn）/ BossMod / BossModReborn。只開 AI 閃避，寶物庫戰鬥中才開
   CrossWorld:
     default: true
-    description: 每輪開始前查 Universalis，傳送到資料中心內地圖最便宜的伺服器買圖並挖寶（需要 Lifestream）
+    description: 每次買圖前（一輪買 2 張、查 2 次）查 Universalis，傳送到資料中心內地圖最便宜的伺服器買圖並挖寶（需要 Lifestream）
   DataCenter:
     default: "陸行鳥"
     description: 要比價的資料中心（Universalis 上的名稱，繁中服是「陸行鳥」）
@@ -744,16 +744,6 @@ function Api.ConfirmYes()
     return false
 end
 
--- 強欲之罠（高低猜）：一律放棄。TODO 待確認 addon 名稱與「放棄」的 callback 參數
-local GAMBLE_ADDON = "SelectYesno"
-function Api.DeclineGamble()
-    if Api.AddonReady(GAMBLE_ADDON) then
-        yield("/callback " .. GAMBLE_ADDON .. " true 1")
-        return true
-    end
-    return false
-end
-
 -- 市場板操作：callback 參數取自社群 SND 腳本（ShamelessEnd/SomethingNeedScripts），
 -- 原本是 SND v1 寫法；節點讀取改用 SND v2 的 Addons API。TODO 待實測
 function Api.Gil()
@@ -1136,8 +1126,9 @@ function Handlers.CHECK_MAP()
         return "END"
     end
     -- 一輪 = 買齊 1 張已解讀 + 1 張未解讀，兩張都挖完（身上完全沒圖）才開始下一輪。
-    -- 每輪開始：CrossWorld 時先查最便宜的伺服器並傳送過去（PICK_WORLD → WORLD_TRAVEL），
-    -- 再依序：買 1 張 → 關市場板 → 解讀 → 再買 1 張 → 關市場板 → 出發挖寶。買不到時本輪不再嘗試，用身上的圖繼續
+    -- 每次要買圖前都重新比價：CrossWorld 時先查當下最便宜的伺服器並傳送過去（PICK_WORLD → WORLD_TRAVEL），一輪查 2 次。
+    -- 依序：比價 → 買 1 張 → 關市場板 → 解讀 → 再比價 → 買 1 張 → 關市場板 → 出發挖寶。
+    -- 買不到時排除該伺服器、換下一個最便宜的；都買不到就不再買圖，用身上的圖挖完後結束
     local hasDeciphered = Api.HasDecipheredMap()
     local hasUndeciphered = Api.ItemCount(Cfg.MapItemId) > 0
     if Cfg.AutoBuy and not State.buyBlocked then
@@ -1540,7 +1531,7 @@ function Handlers.FIELD_FIGHT()
     return resume
 end
 
----------------------------------------------------------------- 跨伺服器（每輪開始時）
+---------------------------------------------------------------- 跨伺服器（每次買圖前）
 
 -- 查 Universalis 選最便宜的伺服器；已經在那裡就直接買，查不到就留在目前伺服器
 function Handlers.PICK_WORLD()
@@ -2128,7 +2119,6 @@ end
 -- 確定沒有新的寶箱才進下一關（點召喚魔法陣），最多 5 關，第 5 關後去找離開用的傳送魔紋
 function Handlers.DUNGEON_R_CHEST()
     if not InDuty() then return "DUNGEON_EXIT" end
-    if Api.DeclineGamble() then return nil end
     if State.lastChestAt == nil then State.lastChestAt = Elapsed() end
 
     if Api.GetEntity(Cfg.DungeonChestName) ~= nil then

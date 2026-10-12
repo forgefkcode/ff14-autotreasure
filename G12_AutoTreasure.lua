@@ -1779,8 +1779,8 @@ end
 
 ---------------------------------------------------------------- 選門型寶物庫（G17 的流程）
 -- 每一層：
---   DUNGEON_CHEST     跑到寶箱（入口離寶箱有一段距離）並互動，觸發陷阱
---   DUNGEON_COMBAT    選一次最近的敵人，交給 RSR / Wrath 打，BossMod AI 閃避
+--   DUNGEON_CHEST     跑到寶箱（入口離寶箱有一段距離）並互動，看反應：出怪 → 戰鬥；強欲陷阱或直接打開 → DUNGEON_LOOT
+--   DUNGEON_COMBAT    不選取目標，交給 RSR / Wrath 打，BossMod AI 閃避
 --   DUNGEON_LOOT      開殘留的寶箱（自動開箱插件通常先開完）、處理強欲陷阱
 --   第 1～4 層：
 --     DUNGEON_DOOR      兩扇「寶物庫的門」選一扇：有「右側／左側的門發光了！」時只剩一扇可互動，選那扇；沒有就隨機
@@ -1833,15 +1833,62 @@ function Handlers.DUNGEON_INIT()
     return "DUNGEON_CHEST"
 end
 
--- 跑到這一層的寶箱並互動（ApproachAndInteract 會先用 vnavmesh 走過去），觸發陷阱就進入戰鬥
+-- 跑到這一層的寶箱並互動（ApproachAndInteract 會先用 vnavmesh 走過去），再看寶箱的反應：
+--   出怪（進入戰鬥或掃到敵人）→ DUNGEON_COMBAT；強欲陷阱 → DUNGEON_LOOT；寶箱直接打開 → DUNGEON_LOOT
+--   沒反應 → 再互動，最多 CHEST_INTERACT_TRIES 次；這層找不到寶箱超過 CHEST_SEARCH_WAIT 秒 → 跳過，交給 DUNGEON_LOOT 收尾
+local CHEST_SEARCH_WAIT    = 15   -- 進來後找不到寶箱等幾秒（樓層可能還在載入）
+local CHEST_REACT_WAIT     = 8    -- 互動後等寶箱反應幾秒，還能互動就再互動一次
+local CHEST_SETTLE         = 3    -- 寶箱不能互動後至少再等幾秒才判定「直接打開」（怪物出現可能有動畫）
+local CHEST_INTERACT_TRIES = 3
+
 function Handlers.DUNGEON_CHEST()
     if not InDuty() then return "DUNGEON_EXIT" end
     if Api.Condition(Cond.inCombat) then return "DUNGEON_COMBAT" end
-    if Api.ConfirmYes() then return nil end
-    if Api.GetEntity(Cfg.DungeonChestName) ~= nil and not Api.Condition(Cond.occupiedInEvent) then
-        ApproachAndInteract(Cfg.DungeonChestName)
+    if State.gambleActive then
+        Log("開寶箱觸發強欲陷阱")
+        return "DUNGEON_LOOT"
     end
-    if TimedOut("DUNGEON_CHEST") then return "ERROR" end
+    if Api.ConfirmYes() then return nil end
+
+    local chest = Api.GetEntity(Cfg.DungeonChestName)
+
+    -- 還沒互動：走過去互動；找不到寶箱先等一下，太久就跳過
+    if State.chestInteractAt == nil then
+        if chest == nil then
+            if Elapsed() < CHEST_SEARCH_WAIT then return nil end
+            Log("這層找不到「" .. Cfg.DungeonChestName .. "」（請確認 DungeonChestName），直接收尾")
+            return "DUNGEON_LOOT"
+        end
+        if not Api.Condition(Cond.occupiedInEvent) and ApproachAndInteract(Cfg.DungeonChestName) then
+            State.chestInteractAt, State.chestTries = Elapsed(), State.chestTries + 1
+        end
+        if TimedOut("DUNGEON_CHEST") then return "ERROR" end
+        return nil
+    end
+
+    -- 已互動：等寶箱的反應。怪物不一定會主動攻擊，每秒掃描一次（不選取目標）
+    if Elapsed() - (State.lastEnemyScan or -10) > 1 then
+        State.lastEnemyScan = Elapsed()
+        if Api.NearestEnemyObject(Cfg.EnemySearchRange) ~= nil then
+            Log("寶箱出怪，開打")
+            Api.WrathOn()
+            return "DUNGEON_COMBAT"
+        end
+    end
+    if Api.Condition(Cond.occupiedInEvent) then return nil end
+    local since = Elapsed() - State.chestInteractAt
+    if chest == nil then
+        if since < CHEST_SETTLE then return nil end
+        Log("寶箱直接打開了（沒有出怪）")
+        return "DUNGEON_LOOT"
+    end
+    if since < CHEST_REACT_WAIT then return nil end
+    if State.chestTries >= CHEST_INTERACT_TRIES then
+        LogError("互動寶箱 " .. State.chestTries .. " 次都沒有反應")
+        return "ERROR"
+    end
+    Log("寶箱沒有反應，再互動一次")
+    State.chestInteractAt = nil
 end
 
 -- 寶物庫戰鬥：等怪物出現（可能有動畫，最多 EnemyWait 秒），只掃描不選取，選目標交給 RSR / Wrath；
@@ -2201,6 +2248,7 @@ local function Transition(next)
     State.combatTargeted, State.lastEnemyScan, State.lastInCombat, State.enemySeen = false, nil, nil, false
     State.favTries = 0
     State.lastChestAt = nil
+    State.chestInteractAt, State.chestTries = nil, 0
     State.passLastPos, State.passTries = nil, 0
     if next == "DUNGEON_CHEST" then State.doorHint, State.gambleActive = nil, false end
     State.spotLogged = nil

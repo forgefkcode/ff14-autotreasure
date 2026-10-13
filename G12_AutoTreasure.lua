@@ -1028,7 +1028,8 @@ function OnChatMessage()
     elseif msg:find("強欲陷阱發動了", 1, true) then
         State.gambleActive = true
     elseif msg:find("發動了", 1, true) and msg:find("召喚", 1, true) then
-        State.summoned = true   -- 轉盤型：「發動了中級召喚，…出現了！」輪盤停下、怪物出現
+        State.summoned = true
+        State.summonName = msg:match("召喚，(.-)出現了")   -- 「發動了上級召喚，金光拉姆帕斯出現了！」→ 金光拉姆帕斯   -- 轉盤型：「發動了中級召喚，…出現了！」輪盤停下、怪物出現
     elseif msg:match("^%s*#繼續%s*$") then
         State.resumeRequested = true   -- 你在聊天框輸入 /echo #繼續（整行只有這幾個字；腳本自己的提示訊息開頭是 [G12]，不會觸發）
     end
@@ -1466,6 +1467,26 @@ local function PullWithTomahawk(enemy)
     State.pullAt, State.pullTries = Elapsed(), State.pullTries + 1
     Log(string.format("選取「%s」，丟%s（距離 %.0f）", tostring(enemy.Name.TextValue), TOMAHAWK_NAME, dist))
     return false
+end
+
+-- 寶物庫裡的敵人：轉盤型先用召喚訊息裡的怪物名稱找（「發動了上級召喚，金光拉姆帕斯出現了！」），
+-- 有些召喚出來的怪不是一般敵人類型，掃描（Api.NearestEnemyObject）認不出來；找不到再用掃描
+local function FindVaultEnemy()
+    if State.summonName ~= nil and State.summonName ~= "" then
+        local o = Api.NearestTargetable(State.summonName)
+        if o ~= nil and not o.IsDead then return o end
+    end
+    return Api.NearestEnemyObject(Cfg.EnemySearchRange)
+end
+
+-- 離開用的傳送門：先找設定的 ExitPortalName，找不到再找「退出點」（實測第 5 層的名稱）。
+-- SND 把新內容貼進舊腳本時會保留舊設定值（以前預設「傳送魔紋」），所以兩個都找
+local EXIT_POINT_NAME = "退出點"
+local function FindExitPortal()
+    for _, name in ipairs({ Cfg.ExitPortalName, EXIT_POINT_NAME }) do
+        if name ~= nil and name ~= "" and Api.GetEntity(name) ~= nil then return name end
+    end
+    return nil
 end
 
 -- 野外戰鬥結束：聊天出現「將陷阱引來的魔物全部打倒了！」（OnChatMessage 標記）就去開寶箱。
@@ -2320,6 +2341,13 @@ function Handlers.DUNGEON_ROULETTE()
     end
 end
 
+-- 轉盤型寶物庫戰鬥：
+--   1. 還沒進入戰鬥：找敵人（召喚訊息裡的怪物名稱優先，找不到再掃描）→ 選取、丟飛斧，最多 3 次，直到進入戰鬥
+--   2. 戰鬥中交給自動輸出；脫離戰鬥滿 3 秒、找不到敵人才算打完。還找得到敵人就重新丟飛斧開怪
+--   3. 丟完飛斧還沒進入戰鬥（或 RouletteWait 秒都找不到敵人）：第 1～4 關看召喚魔法陣、第 5 關看退出點有沒有出現，
+--      有就當作這關結束；STAGE_END_WAIT 秒內都沒有才報錯
+local STAGE_END_WAIT = 10
+
 function Handlers.DUNGEON_R_COMBAT()
     if Api.Condition(Cond.dead) then
         LeaveCombat()
@@ -2327,45 +2355,58 @@ function Handlers.DUNGEON_R_COMBAT()
         return "DUNGEON_EXIT"
     end
     if not InDuty() then LeaveCombat(); return "DUNGEON_EXIT" end
-    -- 等怪物出現（可能有動畫，G15 輪盤要 30 秒以上）：只掃描有沒有敵人、不選取目標，選目標交給 RSR；
-    -- 進入戰鬥或看到敵人就開始，最多等 RouletteWait 秒
-    if not State.combatTargeted then
-        -- 開戰：看到可選取的敵人就選取、丟飛斧開怪，之後交給自動輸出打完
-        local enemy = Api.NearestEnemyObject(Cfg.EnemySearchRange)
-        if enemy ~= nil then
-            State.enemySeen = true
-            if PullWithTomahawk(enemy) then
-                State.combatTargeted = true
-                Log("開怪完成，交給自動輸出打")
-            end
-        elseif Api.Condition(Cond.inCombat) then
-            -- 已經在打、但掃描不到敵人（例如頭目還不能選取）：直接交給自動輸出
-            State.combatTargeted, State.enemySeen = true, true
-            Log("已進入戰鬥，交給自動輸出打")
-        elseif Elapsed() > Cfg.RouletteWait then
-            State.combatTargeted = true
-        end
-        if not State.wrathOn then Api.WrathOn() end
-        return nil
-    end
+    if not State.wrathOn then Api.WrathOn() end
+
     if Api.Condition(Cond.inCombat) then
-        State.lastInCombat = Elapsed()
+        if not State.fought then Log("進入戰鬥，交給自動輸出打") end
+        State.fought, State.lastInCombat = true, Elapsed()
         CombatTick()
         return nil
     end
-    -- 脫離戰鬥滿 3 秒才確認還有沒有敵人（戰鬥中不解除、不重選）
-    if Elapsed() - (State.lastInCombat or 0) < 3 then return nil end
-    if Api.AnyEnemyLeft(Cfg.EnemySearchRange) then
-        State.enemySeen = true
-        State.lastInCombat = Elapsed()
-        if not State.wrathOn then Api.WrathOn() end
-        return nil
+
+    local enemy = FindVaultEnemy()
+    if State.fought then
+        -- 打過了、現在脫離戰鬥：滿 3 秒才確認還有沒有敵人
+        if Elapsed() - State.lastInCombat < 3 then return nil end
+        if enemy == nil then
+            LeaveCombat()
+            Api.ClearTarget()
+            return "DUNGEON_R_CHEST"
+        end
+        -- 還找得到敵人（下一波、或沒打到的怪）：重新開怪
+        Log("還有敵人，重新開怪")
+        State.fought, State.pullExhausted, State.stageEndCheckAt = false, false, nil
+        State.pullStart, State.pullAt, State.pullTries = nil, nil, 0
     end
-    -- 一次都沒看過敵人：可能還在播動畫，等到 RouletteWait + 15 秒才放棄
-    if not State.enemySeen and Elapsed() < Cfg.RouletteWait + 15 then return nil end
-    LeaveCombat()
-    Api.ClearTarget()
-    return "DUNGEON_R_CHEST"
+
+    -- 還沒進入戰鬥：選取、丟飛斧（PullWithTomahawk 進入戰鬥、丟滿 3 次或試了 15 秒才回傳 true）
+    if not State.pullExhausted then
+        if enemy ~= nil then
+            State.enemySeen = true
+            if not PullWithTomahawk(enemy) then return nil end
+            State.pullExhausted = true
+            if Api.Condition(Cond.inCombat) then return nil end
+        elseif Elapsed() < Cfg.RouletteWait then
+            return nil   -- 還沒看到敵人（可能還在播動畫）
+        end
+    end
+
+    -- 丟完飛斧還沒進入戰鬥，或一直找不到敵人：看這關是不是已經結束
+    State.stageEndCheckAt = State.stageEndCheckAt or Elapsed()
+    if State.stage < MAX_STAGES then
+        if Cfg.SphereName ~= "" and Api.GetEntity(Cfg.SphereName) ~= nil then
+            Log("沒進入戰鬥，但召喚魔法陣已出現，這關結束")
+            LeaveCombat()
+            return "DUNGEON_R_CHEST"
+        end
+    elseif FindExitPortal() ~= nil then
+        Log("沒進入戰鬥，但退出點已出現，這關結束")
+        LeaveCombat()
+        return "DUNGEON_R_CHEST"
+    end
+    if Elapsed() - State.stageEndCheckAt < STAGE_END_WAIT then return nil end
+    LogError(State.stage < MAX_STAGES and "沒進入戰鬥，也沒看到召喚魔法陣" or "沒進入戰鬥，也沒看到退出點")
+    return "ERROR"
 end
 
 -- 寶箱打完怪會自動打開，不用互動：等寶箱打開（最多 VAULT_CHEST_WAIT 秒）後再等 10 秒，
@@ -2385,16 +2426,6 @@ function Handlers.DUNGEON_R_CHEST()
     State.stage = State.stage + 1
     if State.stage <= MAX_STAGES then return "DUNGEON_SPHERE" end
     return "DUNGEON_EXIT"
-end
-
--- 離開用的傳送門：先找設定的 ExitPortalName，找不到再找「退出點」（實測第 5 層的名稱）。
--- SND 把新內容貼進舊腳本時會保留舊設定值（以前預設「傳送魔紋」），所以兩個都找
-local EXIT_POINT_NAME = "退出點"
-local function FindExitPortal()
-    for _, name in ipairs({ Cfg.ExitPortalName, EXIT_POINT_NAME }) do
-        if name ~= nil and name ~= "" and Api.GetEntity(name) ~= nil then return name end
-    end
-    return nil
 end
 
 -- 離開寶物庫：還在寶物庫內就找離開用的傳送門（退出點）互動並確認；被移出或陣亡結束時直接等回到野外
@@ -2455,7 +2486,7 @@ local function Transition(next)
     if next == "ERROR" then State.errorFrom, State.errorAfter = State.current, Elapsed() end
     if next == "TRAVEL" then State.cofferPos, State.leashing = nil, false end
     if next == "OPEN_COFFER" then State.fieldCleared = false end
-    if next == "DUNGEON_SPHERE" then State.summoned = false end
+    if next == "DUNGEON_SPHERE" then State.summoned, State.summonName = false, nil end
     Log(State.current .. " → " .. next)
     State.current = next
     State.enteredAt = os.clock()
@@ -2464,6 +2495,7 @@ local function Transition(next)
     State.cityTeleportSent = false
     State.combatTargeted, State.lastEnemyScan, State.lastInCombat, State.enemySeen = false, nil, nil, false
     State.pullStart, State.pullAt, State.pullTries = nil, nil, 0
+    State.fought, State.pullExhausted, State.stageEndCheckAt = false, false, nil
     State.favTries = 0
     State.lastChestAt = nil
     State.chestInteractAt, State.chestTries, State.floorReadyAt, State.chestLogged = nil, 0, nil, false

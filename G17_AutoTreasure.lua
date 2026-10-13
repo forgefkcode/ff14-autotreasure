@@ -125,8 +125,8 @@ configs:
     default: "傳送魔紋"
     description: 傳送門物件名稱（繁中客戶端）
   ExitPortalName:
-    default: "傳送魔紋"
-    description: 寶物庫第 5 關後離開用的傳送門物件名稱
+    default: "退出點"
+    description: 寶物庫第 5 關後離開用的傳送門物件名稱（實測是「退出點」；找不到這個名稱時腳本也會再找「退出點」）
   EchoLogs:
     default: "All"
     description: 日誌層級 All / Errors / None
@@ -1433,6 +1433,26 @@ local function PullWithTomahawk(enemy)
     return false
 end
 
+-- 寶物庫裡的敵人：轉盤型先用召喚訊息裡的怪物名稱找（「發動了上級召喚，金光拉姆帕斯出現了！」），
+-- 有些召喚出來的怪不是一般敵人類型，掃描（Api.NearestEnemyObject）認不出來；找不到再用掃描
+local function FindVaultEnemy()
+    if State.summonName ~= nil and State.summonName ~= "" then
+        local o = Api.NearestTargetable(State.summonName)
+        if o ~= nil and not o.IsDead then return o end
+    end
+    return Api.NearestEnemyObject(Cfg.EnemySearchRange)
+end
+
+-- 離開用的傳送門：先找設定的 ExitPortalName，找不到再找「退出點」（實測第 5 層的名稱）。
+-- SND 把新內容貼進舊腳本時會保留舊設定值（以前預設「傳送魔紋」），所以兩個都找
+local EXIT_POINT_NAME = "退出點"
+local function FindExitPortal()
+    for _, name in ipairs({ Cfg.ExitPortalName, EXIT_POINT_NAME }) do
+        if name ~= nil and name ~= "" and Api.GetEntity(name) ~= nil then return name end
+    end
+    return nil
+end
+
 -- 野外戰鬥結束：聊天出現「將陷阱引來的魔物全部打倒了！」（OnChatMessage 標記）就去開寶箱。
 -- 野外不主動找敵人，選目標交給 RSR / Wrath。打完又被旁邊的怪纏上，由 FIELD_FIGHT 先打完再回來。
 -- 保險：萬一沒收到訊息，脫離戰鬥滿 10 秒也算結束（同樣不索敵）
@@ -2066,10 +2086,11 @@ function Handlers.DUNGEON_EXIT()
     end
     if InDuty() and not Busy() and not Api.Condition(Cond.dead) then
         if Api.ConfirmYes() then return nil end
-        if Api.GetEntity(Cfg.ExitPortalName) ~= nil then
-            if not Api.Condition(Cond.occupiedInEvent) then ApproachAndInteract(Cfg.ExitPortalName) end
+        local exitName = FindExitPortal()
+        if exitName ~= nil then
+            if not Api.Condition(Cond.occupiedInEvent) then ApproachAndInteract(exitName) end
         elseif not State.manualPrompted and Elapsed() > 20 then
-            Log("找不到離開用的「" .. Cfg.ExitPortalName .. "」，請確認 ExitPortalName 或手動離開")
+            Log("找不到離開用的「" .. Cfg.ExitPortalName .. "」或「" .. EXIT_POINT_NAME .. "」，請確認 ExitPortalName 或手動離開")
             State.manualPrompted = true
         end
     end
@@ -2120,6 +2141,7 @@ local function Transition(next)
     State.cityTeleportSent = false
     State.combatTargeted, State.lastEnemyScan, State.lastInCombat, State.enemySeen = false, nil, nil, false
     State.pullStart, State.pullAt, State.pullTries = nil, nil, 0
+    State.fought, State.pullExhausted, State.stageEndCheckAt = false, false, nil
     State.favTries = 0
     State.lastChestAt = nil
     State.passLastPos, State.passTries = nil, 0

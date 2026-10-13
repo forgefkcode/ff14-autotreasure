@@ -1329,6 +1329,41 @@ local function LeaveCombat()
     Api.WrathOff()
 end
 
+-- 寶物庫開戰：選取最近的敵人，用飛斧（戰士的遠程技能，射程 20）先打一下開怪，之後交給自動輸出打完。
+-- 敵人比 TOMAHAWK_RANGE 遠就先走近。用遊戲原生的 /ac 技能名（名稱從遊戲資料取），不經過 SND 的列舉參數。
+-- 打中（進入戰鬥）、丟滿 TOMAHAWK_TRIES 次、或試了 TOMAHAWK_GIVE_UP 秒，就回傳 true（開怪結束）
+local TOMAHAWK_ACTION_ID = 46   -- 飛斧（Action 表，取自 XIVAPI）
+local TOMAHAWK_RANGE     = 18   -- 射程 20，留一點餘裕
+local TOMAHAWK_TRIES     = 3
+local TOMAHAWK_GIVE_UP   = 15
+local TOMAHAWK_NAME      = nil
+
+local function PullWithTomahawk(enemy)
+    State.pullStart = State.pullStart or Elapsed()
+    if Elapsed() - State.pullStart > TOMAHAWK_GIVE_UP then return true end
+    if State.pullAt ~= nil then
+        if Elapsed() - State.pullAt < 2.5 then return false end   -- 等技能放出去（GCD）
+        if Api.Condition(Cond.inCombat) or State.pullTries >= TOMAHAWK_TRIES then return true end
+    end
+    local dist = Distance2D(Api.PlayerPos(), enemy.Position)
+    if dist > TOMAHAWK_RANGE then
+        if not Api.NavRunning() then
+            Api.NavMoveTo(Api.PointOnFloor(enemy.Position.X, enemy.Position.Z) or enemy.Position, false)
+        end
+        return false
+    end
+    Api.NavStop()
+    if not pcall(function() Svc.Targets.Target = enemy end) then return true end   -- 選不到就交給自動輸出
+    if TOMAHAWK_NAME == nil then
+        local ok, name = pcall(function() return tostring(Excel.GetRow("Action", TOMAHAWK_ACTION_ID).Name) end)
+        TOMAHAWK_NAME = (ok and name ~= nil and name ~= "" and name ~= "nil") and name or "飛斧"
+    end
+    yield("/ac " .. TOMAHAWK_NAME)
+    State.pullAt, State.pullTries = Elapsed(), State.pullTries + 1
+    Log(string.format("選取「%s」，丟%s（距離 %.0f）", tostring(enemy.Name.TextValue), TOMAHAWK_NAME, dist))
+    return false
+end
+
 -- 野外戰鬥結束：聊天出現「將陷阱引來的魔物全部打倒了！」（OnChatMessage 標記）就去開寶箱。
 -- 野外不主動找敵人，選目標交給 RSR / Wrath。打完又被旁邊的怪纏上，由 FIELD_FIGHT 先打完再回來。
 -- 保險：萬一沒收到訊息，脫離戰鬥滿 10 秒也算結束（同樣不索敵）
@@ -1767,9 +1802,18 @@ function Handlers.DUNGEON_COMBAT()
     -- 等怪物出現（可能有動畫，G15 輪盤要 30 秒以上）：只掃描有沒有敵人、不選取目標，選目標交給 RSR；
     -- 進入戰鬥或看到敵人就開始，最多等 RouletteWait 秒
     if not State.combatTargeted then
-        if Api.Condition(Cond.inCombat) or Api.NearestEnemyObject(Cfg.EnemySearchRange) ~= nil then
+        -- 開戰：看到可選取的敵人就選取、丟飛斧開怪，之後交給自動輸出打完
+        local enemy = Api.NearestEnemyObject(Cfg.EnemySearchRange)
+        if enemy ~= nil then
+            State.enemySeen = true
+            if PullWithTomahawk(enemy) then
+                State.combatTargeted = true
+                Log("開怪完成，交給自動輸出打")
+            end
+        elseif Api.Condition(Cond.inCombat) then
+            -- 已經在打、但掃描不到敵人（例如頭目還不能選取）：直接交給自動輸出
             State.combatTargeted, State.enemySeen = true, true
-            Log("敵人出現，交給自動輸出打")
+            Log("已進入戰鬥，交給自動輸出打")
         elseif Elapsed() > Cfg.RouletteWait then
             State.combatTargeted = true
         end
@@ -1881,6 +1925,7 @@ local function Transition(next)
     State.sent, State.lastClick, State.travelPhase, State.decipherAt = false, nil, nil, nil
     State.cityTeleportSent = false
     State.combatTargeted, State.lastEnemyScan, State.lastInCombat, State.enemySeen = false, nil, nil, false
+    State.pullStart, State.pullAt, State.pullTries = nil, nil, 0
     State.favTries = 0
     State.lastChestAt = nil
     State.spotLogged = nil

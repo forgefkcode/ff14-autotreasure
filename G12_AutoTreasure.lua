@@ -1842,14 +1842,22 @@ function Handlers.MB_LIST()
             Log("（讀取上架清單的物品名稱…）")
             State.verifyLogged = true
         end
-        local texts, found = Api.ResultTexts(), false
+        -- 要有這張圖的名稱，而且不能出現其他等級的地圖名稱（「陳舊的地圖G15」之類，數字不同就算別的圖）
+        local texts, found, other = Api.ResultTexts(), false, nil
+        local myGrade = Cfg.MapItemName:match("地圖G(%d+)")
         for _, t in ipairs(texts) do
-            if t:find(Cfg.MapItemName, 1, true) then found = true; break end
+            if t:find(Cfg.MapItemName, 1, true) then found = true end
+            if myGrade ~= nil then
+                for grade in t:gmatch("地圖G(%d+)") do
+                    if grade ~= myGrade then other = "G" .. grade end
+                end
+            end
         end
-        if not found then
-            local shown = {}
-            for k = 1, math.min(#texts, 8) do shown[k] = texts[k] end
-            LogError("打開的上架清單不是「" .. Cfg.MapItemName .. "」，不購買（清單文字：" .. table.concat(shown, "｜") .. "）")
+        local shown = {}
+        for k = 1, math.min(#texts, 8) do shown[k] = texts[k] end
+        if not found or other ~= nil then
+            LogError("打開的上架清單不是「" .. Cfg.MapItemName .. "」" .. (other and ("（看到 " .. other .. "）") or "")
+                .. "，不購買（清單文字：" .. table.concat(shown, "｜") .. "）")
             State.verifyFails = (State.verifyFails or 0) + 1
             if State.openedRow ~= nil then
                 State.badRows = State.badRows or {}
@@ -1861,7 +1869,7 @@ function Handlers.MB_LIST()
             return "MB_REOPEN"
         end
         State.listingVerified = true
-        Log("確認上架清單是「" .. Cfg.MapItemName .. "」")
+        Log("確認上架清單是「" .. Cfg.MapItemName .. "」（清單文字：" .. table.concat(shown, "｜") .. "）")
     end
     if price == false then
         LogError("市場板上沒有這張地圖")

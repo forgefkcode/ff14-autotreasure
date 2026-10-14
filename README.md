@@ -5,12 +5,14 @@ SND（Something Need Doing）Lua 腳本，戰士單人循環挖寶與寶物庫�
 | 腳本 | 狀態 | 地圖 | 藏寶地區 | 寶物庫 |
 | --- | --- | --- | --- | --- |
 | [G12_AutoTreasure.lua](G12_AutoTreasure.lua) | 新寫，尚未實測（由 G15 / G17 組合） | Timeworn Zonureskin Map | 漆黑版 6 區（Lakeland、Kholusia、Amh Araeng、Il Mheg、The Rak'tika Greatwood、The Tempest） | Lyhe Ghiah：進去才知道是選門型（The Dungeons）或轉盤型（The Shifting Oubliettes），依地區自動分流 |
+| [G14_AutoTreasure.lua](G14_AutoTreasure.lua) | 新寫，尚未實測（架構與選門流程同 G12） | 陳舊的地圖G14（Timeworn Kumbhiraskin Map） | 曉月版 5 區（Labyrinthos、Thavnair、Garlemald、Mare Lamentorum、Ultima Thule） | 驚奇百寶城（The Excitatron 6000，選門型，5 層） |
 | [G15_AutoTreasure.lua](G15_AutoTreasure.lua) | 實測調整中 | 陳舊的地圖G15（Timeworn Ophiotauroskin Map） | 厄爾庇斯 | The Shifting Gymnasion Agonon（輪盤型，5 關） |
 | [G17_AutoTreasure.lua](G17_AutoTreasure.lua) | 由 G15 改寫（寶物庫為選門流程），尚未實測 | 陳舊的地圖G17（Timeworn Br'aaxskin Map，8 人圖） | 黃金版 5 區（Living Memory 除外） | Cenote Ja Ja Gural（選門型，5 關） |
 
 直接下載（貼進 SND）：
 
 - G12：https://raw.githubusercontent.com/forgefkcode/ff14-autotreasure/main/G12_AutoTreasure.lua
+- G14：https://raw.githubusercontent.com/forgefkcode/ff14-autotreasure/main/G14_AutoTreasure.lua
 - G15：https://raw.githubusercontent.com/forgefkcode/ff14-autotreasure/main/G15_AutoTreasure.lua
 - G17：https://raw.githubusercontent.com/forgefkcode/ff14-autotreasure/main/G17_AutoTreasure.lua
 
@@ -56,6 +58,10 @@ G15 目前實測使用的組合（感謝兩位大神）：
 - 門後的傳送法陣不能互動、沒有名稱：穿過門再往前 `PassageDistance`；角色被傳送（位置瞬間跳動）就算到下一層
 - 強欲陷阱（大／小魔法球）依 `GambleMode` 處理：`Ignore`（預設，不互動）/ `Big` / `Small`
 
+## G14 寶物庫（驚奇百寶城，選門型）
+
+G14 由 G12 產生：整體架構、選門型流程（進入等 10 秒 → 走到寶箱 → 飛斧開怪 → 寶箱自動打開 → 強欲陷阱暫停與診斷 → 選門 → 過場動畫 → 下一層；第 5 層直接打怪 → 退出點）都和 G12 一樣，只換成 G14 自己的地圖、藏寶地區、藏寶點與寶物庫地區（1000）。門、寶箱、退出點等物件名稱沿用 G12 的預設值，驚奇百寶城裡的實際名稱尚未確認。
+
 ## G12 寶物庫（Lyhe Ghiah，選門型或轉盤型）
 
 G12 的寶物庫進去之後才知道是哪一種，腳本進入時依所在地區判斷並分流：
@@ -81,6 +87,7 @@ G12 選門型的強欲陷阱：`GambleMode` 預設 `Pause`（舊設定值 `Ignor
 - G17：`ChestName`、`PortalName`、`DoorName`；
 - G15：`ChestName`、`PortalName`、`SphereName`
 - G12：`ChestName`、`PortalName`、`DoorName`、`SphereName`（兩種寶物庫的物件名稱都要對）
+- G14：`ChestName`、`PortalName`、`DoorName`
 
 ## 狀態
 

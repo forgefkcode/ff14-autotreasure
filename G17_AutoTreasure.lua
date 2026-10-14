@@ -291,7 +291,6 @@ local Timeout = {
     MB_LIST          = 15,
     MB_BUY           = 15,
     MB_CLOSE        = 10,
-    MB_REOPEN        = 10,
     DUNGEON_INIT     = 30,
     DUNGEON_COMBAT   = 3600,  -- 副本限時 60 分鐘
     DUNGEON_CHEST    = 120,   -- 含跑到寶箱的時間
@@ -830,49 +829,6 @@ function Api.MarketFirstListing()
     local msg = Api.AddonNodeText("ItemSearchResult", 1, 5)
     if msg:find("No items found") or msg:find("沒有") then return false end
     return nil
-end
-
--- SND 包裝的 IEnumerable（AddonWrapper.AtkValues / Nodes 等）轉成 Lua 陣列。
--- 那些是 C# 編譯器產生的 iterator，NLua 叫不到它的 GetEnumerator（luanet.each 會出錯），
--- 所以先丟進 .NET 的 List<object>，再用索引一筆一筆讀。失敗回傳 nil
-function Api.ToLuaList(enumerable)
-    local ok, items = pcall(function()
-        local ListType = luanet.import_type("System.Collections.Generic.List`1[System.Object]")
-        local list = ListType(enumerable)
-        local out = {}
-        for i = 0, list.Count - 1 do
-            local item = list[i]
-            if item == nil then item = list:get_Item(i) end
-            out[#out + 1] = item
-        end
-        return out
-    end)
-    if ok then return items end
-    return nil
-end
-
--- 上架清單（ItemSearchResult）裡看得到的文字：AtkValues 的字串 + 顯示中的文字節點。
--- 逐一讀、有界；節點只讀 Text 類型（讀不存在的東西 SND 會直接停掉腳本，pcall 攔不到）
--- 數值、節點清單都轉不成功時回傳 nil（讀不到，不能核對）
-function Api.ResultTexts()
-    local texts = {}
-    local a = Addons.GetAddon("ItemSearchResult")
-    if not (a.Exists and a.Ready) then return texts end
-    local values, nodes = Api.ToLuaList(a.AtkValues), Api.ToLuaList(a.Nodes)
-    if values == nil and nodes == nil then return nil end
-    for i, v in ipairs(values or {}) do
-        if i > 200 then break end
-        local ok, s = pcall(function() return tostring(v.ValueString) end)
-        if ok and s ~= "" and s ~= "nil" and not s:match("^%-?%d+$") then table.insert(texts, s) end
-    end
-    for n, node in ipairs(nodes or {}) do
-        if n > 400 then break end
-        if EnumName(node.NodeType) == "Text" and node.IsVisible then
-            local t = tostring(node.Text)
-            if t ~= "" and t ~= "nil" then table.insert(texts, t) end
-        end
-    end
-    return texts
 end
 
 function Api.MarketBuyFirstListing()
@@ -1741,28 +1697,6 @@ end
 -- 連續 FAVORITES_TRIES 次都不行才改用剪貼簿搜尋（最多 SEARCH_AUTO_TRIES 次），最後請使用者手動
 local FAVORITES_TRIES = 3
 local SEARCH_AUTO_TRIES = 2
-local VERIFY_FAILS_MAX = 6   -- 點開的上架清單不是這張圖，累計幾次就停止自動買圖
-
--- 我的最愛：依名稱找到的列被證實點錯（上架清單不是這張圖）時，改試清單裡其他還沒試過的列。
--- （列的順序是用 3 張圖的清單實測出來的；清單變長後可能對不上，曾經點開 G15 的上架清單）
-local function PickFavoriteRow(nameIdx, rowCount)
-    local bad = State.badRows or {}
-    if next(bad) == nil then return nameIdx end
-    if nameIdx ~= nil and not bad[nameIdx] then return nameIdx end
-    for i = 0, rowCount - 1 do
-        if not bad[i] then return i end
-    end
-    return nil
-end
-
--- 核對失敗太多次：停止自動買圖（不冒險亂買），用身上的圖繼續
-local function StopBuyingUnverified(reason)
-    LogError(reason .. "：為了避免買錯，停止自動買圖")
-    CloseMarket()
-    State.buyBlocked, State.roundBuying = true, false
-    if Api.HasDecipheredMap() or Api.ItemCount(Cfg.MapItemId) > 0 then return "CHECK_MAP" end
-    return "END"
-end
 
 function Handlers.MB_SEARCH()
     if Api.AddonReady("ItemSearchResult") then return "MB_LIST" end
@@ -1773,14 +1707,9 @@ function Handlers.MB_SEARCH()
     if Cfg.FavoritesCallback ~= "" and favTries < FAVORITES_TRIES then
         State.favTries = favTries + 1
         if Api.ShowFavorites() then
-            local rows = Api.ListRows("ItemSearch", 139, 13)
-            local idx = PickFavoriteRow(Api.FindInResults(Cfg.MapItemName), #rows)
-            if idx == nil and next(State.badRows or {}) ~= nil then
-                return StopBuyingUnverified("我的最愛每一列點開都不是「" .. Cfg.MapItemName .. "」")
-            end
+            local idx = Api.FindInResults(Cfg.MapItemName)
             if idx ~= nil then
-                Log("我的最愛：點開「" .. Cfg.MapItemName .. "」（第 " .. idx .. " 項，清單文字「" .. tostring(rows[idx + 1]) .. "」）")
-                State.openedRow = idx
+                Log("我的最愛：點開「" .. Cfg.MapItemName .. "」（第 " .. idx .. " 項）")
                 Api.MarketOpenResult(idx)
                 return nil
             end
@@ -1801,10 +1730,7 @@ function Handlers.MB_SEARCH()
             Log("自動搜尋第 " .. State.searchTries .. " 次（剪貼簿：" .. method .. "）")
         end
         local idx = Api.FindInResults(Cfg.MapItemName)
-        if idx ~= nil then
-            State.openedRow = nil   -- 搜尋結果的列號跟我的最愛不同，不記錄
-            Api.MarketOpenResult(idx)
-        end
+        if idx ~= nil then Api.MarketOpenResult(idx) end
         return nil
     end
 
@@ -1820,44 +1746,6 @@ function Handlers.MB_LIST()
     if price == nil then
         if TimedOut("MB_LIST") then return "ERROR" end
         return nil
-    end
-    -- 買之前先確認打開的是這張圖：上架清單的文字裡要有這張圖的名稱，沒有就關掉上架清單、換一列再試
-    if not State.listingVerified then
-        if not State.verifyLogged then
-            Log("（讀取上架清單的物品名稱…）")
-            State.verifyLogged = true
-        end
-        -- 要有這張圖的名稱，而且不能出現其他等級的地圖名稱（「陳舊的地圖G15」之類，數字不同就算別的圖）
-        local texts, found, other = Api.ResultTexts(), false, nil
-        if texts == nil then
-            return StopBuyingUnverified("讀不到上架清單的文字，無法確認是不是「" .. Cfg.MapItemName .. "」")
-        end
-        local myGrade = Cfg.MapItemName:match("地圖G(%d+)")
-        for _, t in ipairs(texts) do
-            if t:find(Cfg.MapItemName, 1, true) then found = true end
-            if myGrade ~= nil then
-                for grade in t:gmatch("地圖G(%d+)") do
-                    if grade ~= myGrade then other = "G" .. grade end
-                end
-            end
-        end
-        local shown = {}
-        for k = 1, math.min(#texts, 8) do shown[k] = texts[k] end
-        if not found or other ~= nil then
-            LogError("打開的上架清單不是「" .. Cfg.MapItemName .. "」" .. (other and ("（看到 " .. other .. "）") or "")
-                .. "，不購買（清單文字：" .. table.concat(shown, "｜") .. "）")
-            State.verifyFails = (State.verifyFails or 0) + 1
-            if State.openedRow ~= nil then
-                State.badRows = State.badRows or {}
-                State.badRows[State.openedRow] = true
-            end
-            if State.verifyFails >= VERIFY_FAILS_MAX then
-                return StopBuyingUnverified("上架清單核對失敗 " .. State.verifyFails .. " 次")
-            end
-            return "MB_REOPEN"
-        end
-        State.listingVerified = true
-        Log("確認上架清單是「" .. Cfg.MapItemName .. "」（清單文字：" .. table.concat(shown, "｜") .. "）")
     end
     if price == false then
         LogError("市場板上沒有這張地圖")
@@ -1881,19 +1769,6 @@ function Handlers.MB_LIST()
     Log(string.format("購買 %d 張，單價 %d gil", count, price))
     Api.MarketBuyFirstListing()
     return "MB_BUY"
-end
-
--- 點錯列：關掉上架清單（保留搜尋視窗），回到 MB_SEARCH 換一列
-function Handlers.MB_REOPEN()
-    for _, name in ipairs({ "ItemHistory", "ItemSearchResult" }) do
-        if Api.AddonReady(name) then
-            yield("/callback " .. name .. " true -1")
-            yield("/wait 0.3")
-            if TimedOut("MB_REOPEN") then return "ERROR" end
-            return nil
-        end
-    end
-    return "MB_SEARCH"
 end
 
 function Handlers.MB_BUY()
@@ -2275,8 +2150,6 @@ local function Transition(next)
     State.pullStart, State.pullAt, State.pullTries = nil, nil, 0
     State.fought, State.pullExhausted, State.stageEndCheckAt = false, false, nil
     State.favTries = 0
-    State.listingVerified, State.verifyLogged = false, false
-    if next == "MB_OPEN" then State.badRows, State.verifyFails, State.openedRow = {}, 0, nil end
     State.lastChestAt = nil
     State.passLastPos, State.passTries = nil, 0
     if next == "DUNGEON_CHEST" then State.doorHint, State.gambleActive = nil, false end

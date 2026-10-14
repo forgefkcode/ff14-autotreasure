@@ -1,8 +1,8 @@
 --[=====[
 [[SND Metadata]]
 author: forgefk
-version: 1.2.0
-description: 測試從市場板「顯示我的最愛」清單分別點開 G12、G15、G17 藏寶圖的上架清單並讀價格，但不購買。站在市場板旁執行，把聊天框的 [MBTest] 訊息貼回來。
+version: 1.3.0
+description: 測試從市場板「顯示我的最愛」清單分別點開 G12、G14、G15、G17 藏寶圖的上架清單並讀價格，但不購買。站在市場板旁執行，把聊天框的 [MBTest] 訊息貼回來。
 [[End Metadata]]
 --]=====]
 
@@ -10,7 +10,7 @@ local function Echo(msg) yield("/echo [MBTest] " .. msg) end
 
 -- 「顯示我的最愛」按鈕：實測 ItemSearch 事件 12（後面的數字不影響）
 local FAVORITES = "12 6"
-local MAPS = { 26745, 39591, 43557 }   -- G12、G15、G17
+local MAPS = { 26745, 36612, 39591, 43557 }   -- G12、G14、G15、G17
 
 local function Ready(name)
     local ok, r = pcall(function() return Addons.GetAddon(name).Ready end)
@@ -118,7 +118,7 @@ if not Ready("ItemSearch") then
     end
 end
 
--- 1. 分別處理 G12、G15、G17：顯示我的最愛 → 找到這張圖 → 點開上架清單 → 讀價格 → 退出 → 下一張
+-- 1. 分別處理 G12、G14、G15、G17：顯示我的最愛 → 找到這張圖 → 點開上架清單 → 讀價格 → 退出 → 下一張
 for n, itemId in ipairs(MAPS) do
     local name = tostring(Excel.GetRow("Item", itemId).Name)
     Echo(n .. ". " .. name .. "（" .. itemId .. "）")

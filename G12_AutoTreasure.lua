@@ -320,6 +320,7 @@ local Timeout = {
     DUNGEON_DOOR     = 60,
     DUNGEON_DOOR_WAIT = 60,
     DUNGEON_PASSAGE  = 60,
+    DUNGEON_PULL     = 180,   -- 找怪 3 次的保底
     DUNGEON_SPHERE   = 15,
     DUNGEON_ROULETTE = 150,  -- 輪盤動畫 30 秒以上，加上頭目登場動畫；逾時不報錯，改到戰鬥步驟等
     DUNGEON_R_COMBAT = 3600,  -- 副本限時 60 分鐘
@@ -2366,45 +2367,39 @@ function Handlers.DUNGEON_DOOR()
     if TimedOut("DUNGEON_DOOR") then return "ERROR" end
 end
 
--- 到了下一層沒：下面任一個成立就把層數 +1、清掉門的資料，回傳 true
---   * 被傳送：角色位置一次（0.3 秒）跳動超過 FLOOR_JUMP。走路一次最多約 2 碼；傳送距離不一定很遠（原本用 30 會漏掉）
---   * 看到下一層的寶箱：出現可互動的寶箱，而且離這一層互動過的寶箱（State.floorChestPos）超過 FLOOR_CHEST_APART
--- 傳送後有一段不能移動的過場動畫，交給 DUNGEON_CHEST 等動畫結束再去找寶箱
-local FLOOR_JUMP        = 12
+-- 到了下一層沒：不看位移，看有沒有下一層的寶箱或怪物（傳送後會有一段不能移動的過場動畫，
+-- 之後的 DUNGEON_CHEST / DUNGEON_PULL 都會等動畫結束才動）：
+--   * 寶箱：可互動，而且離這一層互動過的寶箱（State.floorChestPos）超過 FLOOR_CHEST_APART → DUNGEON_CHEST（第 1～4 層）
+--   * 怪物：第 5 層一進去就是怪、沒有寶箱 → DUNGEON_PULL
+-- 有就把層數 +1、清掉門的資料，回傳下一個步驟；都沒有回傳 nil
 local FLOOR_CHEST_APART = 20
 
-local function ArrivedNextFloor()
-    local pos = Api.PlayerPos()
-    local last = State.passLastPos
-    State.passLastPos = pos
-    local how = nil
-    if last ~= nil then
-        local dx, dy, dz = pos.X - last.X, pos.Y - last.Y, pos.Z - last.Z
-        local jump = math.sqrt(dx * dx + dy * dy + dz * dz)
-        if jump > FLOOR_JUMP then how = string.format("被傳送，位移 %.0f", jump) end
+local function NextFloorStep()
+    local nextStep, how = nil, nil
+    local chest = Api.NearestTargetable(Cfg.DungeonChestName)
+    if chest ~= nil and (State.floorChestPos == nil
+        or Distance2D(chest.Position, State.floorChestPos) > FLOOR_CHEST_APART) then
+        nextStep, how = "DUNGEON_CHEST", "看到寶箱"
+    elseif FindVaultEnemy() ~= nil then
+        nextStep, how = "DUNGEON_PULL", "看到怪物"
     end
-    if how == nil and State.floorChestPos ~= nil then
-        local chest = Api.NearestTargetable(Cfg.DungeonChestName)
-        if chest ~= nil and Distance2D(chest.Position, State.floorChestPos) > FLOOR_CHEST_APART then
-            how = "看到下一層的寶箱"
-        end
-    end
-    if how == nil then return false end
+    if nextStep == nil then return nil end
     State.stage = State.stage + 1
     State.doorPos, State.doorObj, State.doorFrom = nil, nil, nil
     Api.NavStop()
     Log("到達第 " .. State.stage .. " 層（" .. how .. "）")
-    return true
+    return nextStep
 end
 
 -- 等開門（或關門）動畫：門可能直接開、關一下再開、警報後彩虹光再開，或警報後把人移出寶物庫。
--- 進下一層有一段不能跳過的動畫：至少等 DoorAnimWait 秒，而且等到角色能移動；動畫直接把人傳到下一層也算到了
+-- 至少等 DoorAnimWait 秒，而且等到角色能移動；這時就看到下一層的寶箱或怪物也算到了
 function Handlers.DUNGEON_DOOR_WAIT()
     if not InDuty() then
         Log("選錯門，被移出寶物庫")
         return "DUNGEON_EXIT"
     end
-    if ArrivedNextFloor() then return "DUNGEON_CHEST" end
+    local nextStep = NextFloorStep()   -- 開門動畫中就被傳到下一層
+    if nextStep ~= nil then return nextStep end
     if Api.ConfirmYes() then return nil end
     if Elapsed() < Cfg.DoorAnimWait or Api.Condition(Cond.occupiedInEvent) or not Api.PlayerReady() then return nil end
     return "DUNGEON_PASSAGE"
@@ -2412,14 +2407,15 @@ end
 
 -- 走進門：門後有傳送法陣（不能互動、沒有名稱），踩上去會被傳到下一層。
 -- 從選門前站的位置往門的方向，穿過門再往前 PassageDistance（每次沒傳送成功就再往前 4）。
--- 角色位置瞬間跳動超過 30（被傳送）就算到了下一層
+-- 看到下一層的寶箱或怪物（NextFloorStep）就算到了；DUNGEON_PASSAGE 秒內都沒看到才報錯
 function Handlers.DUNGEON_PASSAGE()
     if not InDuty() then
         Log("選錯門，被移出寶物庫")
         return "DUNGEON_EXIT"
     end
     if Busy() then return nil end
-    if ArrivedNextFloor() then return "DUNGEON_CHEST" end
+    local nextStep = NextFloorStep()
+    if nextStep ~= nil then return nextStep end
 
     -- 踩上法陣後有一段不能操作的動畫：動畫中不要再下移動指令（不然每次都會再往前 4，越走越遠）
     if not Api.NavRunning() and Api.PlayerReady() and not Api.Condition(Cond.occupiedInEvent) then
@@ -2434,6 +2430,45 @@ function Handlers.DUNGEON_PASSAGE()
         Api.NavMoveTo(target, false)
     end
     if TimedOut("DUNGEON_PASSAGE") then return "ERROR" end
+end
+
+-- 一進新的一層就是怪物、沒有寶箱（第 5 層）：等過場動畫結束 → 找怪 → 走到怪物附近、選取、丟飛斧
+-- （PullWithTomahawk：最多丟 3 次、試 15 秒）→ 進入戰鬥就交給 DUNGEON_COMBAT，之後照舊（打完 → 等寶箱自動打開 → 退出點）。
+-- 一次找怪沒進入戰鬥（或 PULL_FIND_WAIT 秒都看不到怪）就重來，重來 PULL_ATTEMPTS 次都不行才報錯
+local PULL_ATTEMPTS  = 3
+local PULL_FIND_WAIT = 10
+
+function Handlers.DUNGEON_PULL()
+    if not InDuty() then return "DUNGEON_EXIT" end
+    if Api.Condition(Cond.inCombat) then return "DUNGEON_COMBAT" end
+    -- 等過場動畫結束、角色能移動（只等這一次）
+    if State.floorReadyAt == nil then
+        if not Api.PlayerReady() or Api.Condition(Cond.occupiedInEvent) then return nil end
+        State.floorReadyAt = Elapsed()
+        Log("第 " .. State.stage .. " 層：可以操作了，去找怪物")
+    end
+    if Elapsed() - State.floorReadyAt < FLOOR_SETTLE then return nil end
+
+    State.pullAttempt = State.pullAttempt or 1
+    State.attemptStart = State.attemptStart or Elapsed()
+    local failed = false
+    local enemy = FindVaultEnemy()
+    if enemy ~= nil then
+        if PullWithTomahawk(enemy) then
+            if Api.Condition(Cond.inCombat) then return "DUNGEON_COMBAT" end
+            failed = true
+        end
+    elseif Elapsed() - State.attemptStart > PULL_FIND_WAIT then
+        failed = true
+    end
+    if not failed then return nil end
+    if State.pullAttempt >= PULL_ATTEMPTS then
+        LogError("找怪 " .. PULL_ATTEMPTS .. " 次都沒有進入戰鬥")
+        return "ERROR"
+    end
+    State.pullAttempt = State.pullAttempt + 1
+    Log("沒有進入戰鬥，重新找怪（第 " .. State.pullAttempt .. " 次）")
+    State.attemptStart, State.pullStart, State.pullAt, State.pullTries = Elapsed(), nil, nil, 0
 end
 
 ---------------------------------------------------------------- 轉盤型寶物庫（G15 的流程）
@@ -2648,6 +2683,7 @@ local function Transition(next)
     State.favTries = 0
     State.lastChestAt = nil
     State.chestInteractAt, State.chestTries, State.floorReadyAt, State.chestLogged = nil, 0, nil, false
+    State.pullAttempt, State.attemptStart = nil, nil
     State.chestMovePos, State.chestMoveAt = nil, nil
     State.passLastPos, State.passTries = nil, 0
     if next == "DUNGEON_CHEST" then State.doorHint, State.gambleActive = nil, false end

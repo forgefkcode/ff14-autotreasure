@@ -1077,18 +1077,18 @@ function Handlers.INIT()
     if hasRsr and hasWrath then Log("提醒：RotationSolver 和 Wrath Combo 同時啟用，兩個會搶著放技能，建議只開一個") end
     State.rotation = rotation
 
-    -- 閃避插件：G12 固定用 BossMod Reborn（/bmrai on|off），只用 AI 閃避、寶物庫內才開。
-    -- 不看閃避插件的設定：SND 會保留舊的同名設定值（例如從 G15 貼過來的 BossMod），會選錯插件。
-    -- BMR 沒啟用時才退回 BossMod（/vbm ai on|off）並提醒
+    -- 閃避插件：G12 固定用 BossMod（/vbm ai on|off），只用 AI 閃避、寶物庫內才開。
+    -- 不看閃避插件的設定：SND 會保留舊的同名設定值，可能選錯插件。
+    -- BossMod 沒啟用時才退回 BossMod Reborn（/bmrai on|off）並提醒
     local hasVbm, hasBmr = Api.PluginInstalled("BossMod"), Api.PluginInstalled("BossModReborn")
     local bossCmd = nil
-    if hasBmr then
-        bossCmd = "/bmr"
-    elseif hasVbm then
+    if hasVbm then
         bossCmd = "/vbm"
-        Log("提醒：沒偵測到啟用中的 BossMod Reborn，改用 BossMod。G12 預定用 BMR，請在 /xlplugins 啟用 BossMod Reborn")
+    elseif hasBmr then
+        bossCmd = "/bmr"
+        Log("提醒：沒偵測到啟用中的 BossMod，改用 BossMod Reborn。G12 預定用 BossMod，請在 /xlplugins 啟用 BossMod")
     else
-        LogError("沒有偵測到啟用中的 BossMod Reborn / BossMod（請在 /xlplugins 啟用 BossMod Reborn）")
+        LogError("沒有偵測到啟用中的 BossMod / BossMod Reborn（請在 /xlplugins 啟用 BossMod）")
         return "END"
     end
     if hasVbm and hasBmr then Log("提醒：BossMod 和 BossMod Reborn 同時啟用，兩個會搶著閃避，建議只開一個") end

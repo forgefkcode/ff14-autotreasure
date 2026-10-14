@@ -1906,6 +1906,7 @@ function Handlers.DUNGEON_INIT()
         return nil
     end
     State.stage = 1
+    State.floorChestPos = nil
     -- 進寶物庫就開自動輸出和閃避，一直開到離開寶物庫（寶物庫內一般的關閉呼叫都會跳過，見 Api.WrathOff）
     Api.WrathOn()
     Log("進入寶物庫，開啟自動輸出與閃避")
@@ -2041,6 +2042,8 @@ function Handlers.DUNGEON_CHEST()
             State.chestLogged = true
         end
         if not Api.Condition(Cond.occupiedInEvent) and ApproachChest(chest) then
+            -- 記下這一層寶箱的位置：走進門時用來分辨「看到的是下一層的寶箱」（不在 Transition 重置）
+            State.floorChestPos = { X = chest.Position.X, Z = chest.Position.Z }
             State.chestInteractAt, State.chestTries = Elapsed(), State.chestTries + 1
         end
         if TimedOut("DUNGEON_CHEST") then return "ERROR" end
@@ -2363,18 +2366,34 @@ function Handlers.DUNGEON_DOOR()
     if TimedOut("DUNGEON_DOOR") then return "ERROR" end
 end
 
--- 被傳送到下一層：角色位置一次跳動超過 30。跳了就把層數 +1、清掉門的資料，回傳 true
+-- 到了下一層沒：下面任一個成立就把層數 +1、清掉門的資料，回傳 true
+--   * 被傳送：角色位置一次（0.3 秒）跳動超過 FLOOR_JUMP。走路一次最多約 2 碼；傳送距離不一定很遠（原本用 30 會漏掉）
+--   * 看到下一層的寶箱：出現可互動的寶箱，而且離這一層互動過的寶箱（State.floorChestPos）超過 FLOOR_CHEST_APART
+-- 傳送後有一段不能移動的過場動畫，交給 DUNGEON_CHEST 等動畫結束再去找寶箱
+local FLOOR_JUMP        = 12
+local FLOOR_CHEST_APART = 20
+
 local function ArrivedNextFloor()
     local pos = Api.PlayerPos()
     local last = State.passLastPos
     State.passLastPos = pos
-    if last == nil then return false end
-    local dx, dy, dz = pos.X - last.X, pos.Y - last.Y, pos.Z - last.Z
-    if dx * dx + dy * dy + dz * dz <= 30 * 30 then return false end
+    local how = nil
+    if last ~= nil then
+        local dx, dy, dz = pos.X - last.X, pos.Y - last.Y, pos.Z - last.Z
+        local jump = math.sqrt(dx * dx + dy * dy + dz * dz)
+        if jump > FLOOR_JUMP then how = string.format("被傳送，位移 %.0f", jump) end
+    end
+    if how == nil and State.floorChestPos ~= nil then
+        local chest = Api.NearestTargetable(Cfg.DungeonChestName)
+        if chest ~= nil and Distance2D(chest.Position, State.floorChestPos) > FLOOR_CHEST_APART then
+            how = "看到下一層的寶箱"
+        end
+    end
+    if how == nil then return false end
     State.stage = State.stage + 1
     State.doorPos, State.doorObj, State.doorFrom = nil, nil, nil
     Api.NavStop()
-    Log("到達第 " .. State.stage .. " 層")
+    Log("到達第 " .. State.stage .. " 層（" .. how .. "）")
     return true
 end
 

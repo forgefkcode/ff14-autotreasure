@@ -21,7 +21,7 @@ SND（Something Need Doing）Lua 腳本，戰士單人循環挖寶與寶物庫�
 
 ## 需求
 
-- SND（Lua 引擎）、vnavmesh（移動）、Lifestream（傳送）、自動輸出 RotationSolver Reborn 或 Wrath Combo（擇一，`RotationPlugin` 預設自動偵測，優先 RSR）、閃避 BossMod 或 BossMod Reborn（擇一，只開 AI 閃避；`BossModPlugin` 預設自動偵測，G15 / G17 優先 BossMod，G12 優先 BossMod Reborn 並停用 BMR 的自動循環）。G15、G17 都支援 RSR，喝藥交給 RSR 處理
+- SND（Lua 引擎）、vnavmesh（移動）、Lifestream（傳送）、自動輸出 RotationSolver Reborn 或 Wrath Combo（擇一，`RotationPlugin` 預設自動偵測，優先 RSR）、閃避 BossMod 或 BossMod Reborn（擇一，只開 AI 閃避；G15 / G17 用 `BossModPlugin` 選擇，預設優先 BossMod；G12 固定用 BossMod Reborn（沒啟用才退回 BossMod）並停用 BMR 的自動循環）。G15、G17 都支援 RSR，喝藥交給 RSR 處理
 - 建議：[XIV 藏寶圖工具小幫手](https://github.com/cycleapple/xiv-party-treasure-helper)（XivTreasureParty），開啟「解碼後自動開地圖打旗標」，解讀後自動在藏寶點插旗；沒裝就要手動插旗
 
 ## 使用的插件版本

@@ -22,9 +22,6 @@ configs:
   RotationPlugin:
     default: "Auto"
     description: 自動輸出插件：Auto（有 RotationSolver Reborn 用 RSR，否則用 Wrath Combo）/ RotationSolver / WrathCombo
-  BossModPlugin:
-    default: "Auto"
-    description: 閃避插件：Auto（G12 優先 BossMod Reborn，沒有才用 BossMod）/ BossModReborn / BossMod。只開 AI 閃避（BMR 的自動循環會停用），寶物庫戰鬥中才開
   CrossWorld:
     default: true
     description: 每次買圖前（一輪買 2 張、查 2 次）查 Universalis，傳送到資料中心內地圖最便宜的伺服器買圖並挖寶（需要 Lifestream）
@@ -250,7 +247,6 @@ local Cfg = {
     FlagWait   = Config.Get("FlagWait"),
     AutoBuy          = Config.Get("AutoBuy"),
     RotationPlugin   = Config.Get("RotationPlugin"),
-    BossModPlugin    = Config.Get("BossModPlugin"),
     CrossWorld       = Config.Get("CrossWorld"),
     DataCenter       = Config.Get("DataCenter"),
     MaxMapPrice      = Config.Get("MaxMapPrice"),
@@ -1081,17 +1077,18 @@ function Handlers.INIT()
     if hasRsr and hasWrath then Log("提醒：RotationSolver 和 Wrath Combo 同時啟用，兩個會搶著放技能，建議只開一個") end
     State.rotation = rotation
 
-    -- 閃避插件：BossMod Reborn（/bmrai on|off）或 BossMod（/vbm ai on|off），只用 AI 閃避、寶物庫戰鬥中才開。G12 的 Auto 優先 BMR
+    -- 閃避插件：G12 固定用 BossMod Reborn（/bmrai on|off），只用 AI 閃避、寶物庫內才開。
+    -- 不看閃避插件的設定：SND 會保留舊的同名設定值（例如從 G15 貼過來的 BossMod），會選錯插件。
+    -- BMR 沒啟用時才退回 BossMod（/vbm ai on|off）並提醒
     local hasVbm, hasBmr = Api.PluginInstalled("BossMod"), Api.PluginInstalled("BossModReborn")
-    local choice = Cfg.BossModPlugin or "Auto"
     local bossCmd = nil
-    if choice == "BossModReborn" or (choice == "Auto" and hasBmr) then
-        bossCmd = hasBmr and "/bmr" or nil
-    elseif choice == "BossMod" or (choice == "Auto" and hasVbm) then
-        bossCmd = hasVbm and "/vbm" or nil
-    end
-    if bossCmd == nil then
-        LogError("沒有偵測到啟用中的 BossMod Reborn / BossMod（設定：" .. choice .. "）")
+    if hasBmr then
+        bossCmd = "/bmr"
+    elseif hasVbm then
+        bossCmd = "/vbm"
+        Log("提醒：沒偵測到啟用中的 BossMod Reborn，改用 BossMod。G12 預定用 BMR，請在 /xlplugins 啟用 BossMod Reborn")
+    else
+        LogError("沒有偵測到啟用中的 BossMod Reborn / BossMod（請在 /xlplugins 啟用 BossMod Reborn）")
         return "END"
     end
     if hasVbm and hasBmr then Log("提醒：BossMod 和 BossMod Reborn 同時啟用，兩個會搶著閃避，建議只開一個") end
@@ -1107,7 +1104,7 @@ function Handlers.INIT()
         yield(bossCmd .. " ar clear")
     end
     Log("輸出：" .. (rotation == "RotationSolver" and "RotationSolver Reborn" or "Wrath Combo")
-        .. "；閃避：" .. (bossCmd == "/bmr" and "BossMod Reborn" or "BossMod") .. " AI（只在寶物庫戰鬥中開）")
+        .. "；閃避：" .. (bossCmd == "/bmr" and "BossMod Reborn" or "BossMod") .. " AI（只在寶物庫內開）")
     if Cfg.MapItemId == 0 then
         LogError("未設定 MapItemId")
         return "END"

@@ -1000,7 +1000,7 @@ function Handlers.INIT()
     -- 清掉 BossMod / BMR 自己的自動輸出預設，避免跟 RSR / Wrath 搶著放技能；它們只負責 AI 閃避
     yield(bossCmd .. " ar clear")
     Log("輸出：" .. (rotation == "RotationSolver" and "RotationSolver Reborn" or "Wrath Combo")
-        .. "；閃避：" .. (bossCmd == "/bmr" and "BossMod Reborn" or "BossMod") .. " AI（只在寶物庫戰鬥中開）")
+        .. "；閃避：" .. (bossCmd == "/bmr" and "BossMod Reborn" or "BossMod") .. " AI（只在寶物庫內開）")
     if Cfg.MapItemId == 0 then
         LogError("未設定 MapItemId")
         return "END"

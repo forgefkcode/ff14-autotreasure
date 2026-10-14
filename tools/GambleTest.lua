@@ -1,7 +1,7 @@
 --[=====[
 [[SND Metadata]]
 author: forgefk
-version: 0.3.0
+version: 0.3.1
 description: 強欲陷阱診斷：找出腳本讀得到牌面數字的地方。強欲陷阱出現（大／小魔法球出現）時執行，約 45 秒，期間可以照平常選大／小或不動。只讀資料、不會互動任何東西。結束後把聊天框的 [GambleTest] 訊息全部貼回來，並告訴我當時畫面上的牌是幾、你選了什麼、結果如何。
 function_chat_filters:
   OnChatMessage:
@@ -85,6 +85,7 @@ end
 
 -- 候選視窗：名稱不存在也沒關係（Exists 會是 false，不會讀它）
 local ADDONS = {
+    "TreasureHighLow",   -- 強欲陷阱視窗（FFXIVClientStructs AgentId.TreasureHighLow / ECommons AddonMaster）
     "SelectYesno", "SelectString", "SelectIconString", "SelectOk", "Talk", "_BattleTalk", "_MiniTalk",
     "_ScreenText", "_TextError", "_WideText", "_PopUpText", "_TextChain", "_AreaText", "_LocationTitle",
     "_LocationTitleShort", "ScreenInfo", "ScreenInfoFrontBack", "ScreenFrameSystem", "_TextClassChange",

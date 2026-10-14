@@ -8,7 +8,7 @@ plugin_dependencies:
 - Lifestream
 function_chat_filters:
   OnChatMessage:
-    message_regex: "將陷阱引來的魔物全部打倒了|門發光了|強欲陷阱發動了|#繼續|發動了.*召喚"
+    message_regex: "."
 configs:
   MaxRounds:
     default: 0
@@ -118,6 +118,9 @@ configs:
   GambleBigName:
     default: "大"
     description: 強欲陷阱「大」魔法球的物件名稱
+  GambleDiag:
+    default: true
+    description: 強欲陷阱暫停時自動跑診斷，在聊天框印出視窗、物件、聊天訊息的變化，用來找牌面數字讀不讀得到（不會按按鈕）
   GambleSmallName:
     default: "小"
     description: 強欲陷阱「小」魔法球的物件名稱
@@ -278,6 +281,7 @@ local Cfg = {
     GambleMode       = Config.Get("GambleMode"),
     GambleBigName    = Config.Get("GambleBigName"),
     GambleSmallName  = Config.Get("GambleSmallName"),
+    GambleDiag       = Config.Get("GambleDiag"),
     ChestName        = Config.Get("ChestName"),
     DungeonChestName = Config.Get("DungeonChestName"),
     PortalName       = Config.Get("PortalName"),
@@ -1011,7 +1015,7 @@ local function EnsureWrathOff()
     end
 end
 
--- 聊天訊息觸發（開頭 function_chat_filters 限制只有這幾種訊息才會呼叫；函式只設旗標，不做別的事）：
+-- 聊天訊息觸發（每則聊天都會呼叫：強欲陷阱暫停時要收集所有訊息；函式只設旗標、收集訊息，不做別的事）：
 --   「將陷阱引來的魔物全部打倒了！」→ 野外陷阱打完，去開寶箱
 --   「右側的門發光了！」「左側的門發光了！」→ 寶物庫裡只會剩一扇門可以互動，選那扇
 --   「強欲陷阱發動了！」→ 出現大／小兩顆魔法球，依 GambleMode 處理
@@ -1019,6 +1023,8 @@ end
 function OnChatMessage()
     local ok, msg = pcall(function() return tostring(TriggerData.message) end)
     if not ok or msg == nil then return end
+    if msg:sub(1, 5) == "[G12]" then return end   -- 腳本自己印的訊息（含診斷轉印的聊天內容）不處理
+    if State.gambleDiagOn and #State.gambleChat < 60 then table.insert(State.gambleChat, msg) end
     if msg:find("將陷阱引來的魔物全部打倒了", 1, true) then
         State.fieldCleared = true
     elseif msg:find("右側的門發光了", 1, true) then
@@ -1028,8 +1034,8 @@ function OnChatMessage()
     elseif msg:find("強欲陷阱發動了", 1, true) then
         State.gambleActive = true
     elseif msg:find("發動了", 1, true) and msg:find("召喚", 1, true) then
-        State.summoned = true
-        State.summonName = msg:match("召喚，(.-)出現了")   -- 「發動了上級召喚，金光拉姆帕斯出現了！」→ 金光拉姆帕斯   -- 轉盤型：「發動了中級召喚，…出現了！」輪盤停下、怪物出現
+        State.summoned = true   -- 轉盤型：「發動了中級召喚，…出現了！」輪盤停下、怪物出現
+        State.summonName = msg:match("召喚，(.-)出現了")   -- 「發動了上級召喚，金光拉姆帕斯出現了！」→ 金光拉姆帕斯
     elseif msg:match("^%s*#繼續%s*$") then
         State.resumeRequested = true   -- 你在聊天框輸入 /echo #繼續（整行只有這幾個字；腳本自己的提示訊息開頭是 [G12]，不會觸發）
     end
@@ -1919,6 +1925,20 @@ local function GamblePauses()
     return Cfg.GambleMode ~= "Big" and Cfg.GambleMode ~= "Small"
 end
 
+-- 強欲陷阱的視窗（「挑戰解除陷阱／不挑戰解除陷阱」）。名稱取自 FFXIVClientStructs（AgentId.TreasureHighLow，
+-- 註解 Gambler's Lure）與 ECommons 的 AddonMaster.TreasureHighLow（按鈕 46 挑戰、47 不挑戰直接開箱）
+local GAMBLE_WINDOW = "TreasureHighLow"
+
+-- 強欲陷阱出現了沒：聊天「強欲陷阱發動了」，或強欲陷阱視窗開著
+local function GambleDetected()
+    if State.gambleActive then return true end
+    if Api.AddonReady(GAMBLE_WINDOW) then
+        State.gambleActive = true
+        return true
+    end
+    return false
+end
+
 local VAULT_ENTRY_WAIT     = 10   -- 剛進寶物庫（第 1 層）可以操作後，先等幾秒才往寶箱走（實測要等）
 local FLOOR_SETTLE         = 1.5  -- 第 2 層以後：進入這一層的動畫結束、可以操作後，再等幾秒才開始動
 local CHEST_SEARCH_WAIT    = 15   -- 開始動之後找不到寶箱再等幾秒（樓層可能還在載入），之後跳過
@@ -1974,7 +1994,7 @@ end
 function Handlers.DUNGEON_CHEST()
     if not InDuty() then return "DUNGEON_EXIT" end
     if Api.Condition(Cond.inCombat) then return "DUNGEON_COMBAT" end
-    if State.gambleActive then
+    if GambleDetected() then
         Log("開寶箱觸發強欲陷阱")
         return GamblePauses() and "DUNGEON_GAMBLE" or "DUNGEON_LOOT"
     end
@@ -2144,7 +2164,7 @@ function Handlers.DUNGEON_LOOT()
     if not InDuty() then return "DUNGEON_EXIT" end
     if Api.Condition(Cond.inCombat) then return "DUNGEON_COMBAT" end   -- 開箱又觸發額外的怪
     if State.lastChestAt == nil then State.lastChestAt = Elapsed() end
-    if State.gambleActive and GamblePauses() then return "DUNGEON_GAMBLE" end
+    if GambleDetected() and GamblePauses() then return "DUNGEON_GAMBLE" end
     if HandleGamble() then
         State.lastChestAt = Elapsed()
         if TimedOut("DUNGEON_LOOT") then return "ERROR" end
@@ -2163,31 +2183,141 @@ function Handlers.DUNGEON_LOOT()
     return "DUNGEON_DOOR"
 end
 
+-- 強欲陷阱診斷（GambleDiag = true 時，暫停期間自動跑）：找出腳本讀得到牌面數字的地方。
+-- 每 GAMBLE_DIAG_INTERVAL 秒讀一次強欲陷阱視窗、其他候選視窗、附近物件，只印有變化的部分；看起來像 1～9 的數字標 ★。
+-- 暫停期間的聊天訊息也全部記下來印出。不會按任何按鈕、不互動。
+-- 安全注意（同 tools/GambleTest.lua v0.3）：讀到不存在的 .NET 欄位或 C# 出錯，SND 會直接停掉腳本，pcall 攔不到。所以
+--   * 物件只讀實測可用的欄位：Name、ObjectKind、SubKind、IsTargetable、Position
+--   * 視窗只讀 Exists 而且顯示中的；數值用 AtkValues 逐一讀（有界），節點只讀類型是 Text 的文字
+--   * 第一次讀某個視窗前先印一行：萬一停掉，看最後一行就知道是哪個
+local GAMBLE_DIAG_INTERVAL = 2
+local GAMBLE_DIAG_RANGE    = 30
+local GAMBLE_DIAG_ADDONS   = {
+    GAMBLE_WINDOW, "SelectYesno", "SelectString", "SelectIconString", "Talk", "_BattleTalk", "_ScreenText",
+    "_TextError", "_WideText", "_PopUpText", "ScreenInfo", "ScreenInfoFrontBack", "_ToDoList", "_NotificationTimer",
+}
+
+local function DiagMark(s)
+    s = tostring(s)
+    if s:match("^%s*[1-9]%s*$") or s:match("[^%d][1-9][^%d]") or s:match("^[1-9][^%d]") or s:match("[^%d][1-9]$") then
+        return "★" .. s
+    end
+    return s
+end
+
+-- /echo 走遊戲聊天框，一則最多 500 bytes（中文一字 3 bytes）：超過 400 bytes 就依 UTF-8 字元邊界切成多則
+local function DiagEcho(msg)
+    msg = "[G12][強欲] " .. msg
+    while #msg > 0 do
+        local cut = #msg
+        if cut > 400 then
+            cut = 400
+            while cut > 0 and (msg:byte(cut + 1) or 0) >= 0x80 and (msg:byte(cut + 1) or 0) < 0xC0 do cut = cut - 1 end
+        end
+        yield("/echo " .. msg:sub(1, cut))
+        msg = msg:sub(cut + 1)
+        if #msg > 0 then msg = "[G12][強欲] …" .. msg end
+    end
+end
+
+local function DiagAddon(name)
+    local a = Addons.GetAddon(name)
+    local values, texts = {}, {}
+    local i = 0
+    for v in luanet.each(a.AtkValues) do
+        local s = tostring(v.ValueString)
+        if s ~= "" and s ~= "0" and s ~= "nil" and #values < 40 then table.insert(values, i .. "=" .. DiagMark(s)) end
+        i = i + 1
+        if i >= 300 then break end
+    end
+    local n = 0
+    for node in luanet.each(a.Nodes) do
+        n = n + 1
+        if n > 600 or #texts >= 40 then break end
+        if tostring(node.NodeType) == "Text" and node.IsVisible then
+            local t = tostring(node.Text)
+            if t ~= "" and t ~= "nil" then table.insert(texts, node.Id .. "=" .. DiagMark(t)) end
+        end
+    end
+    return "數值：" .. (#values > 0 and table.concat(values, " ") or "無") .. " ｜文字：" .. (#texts > 0 and table.concat(texts, " ") or "無")
+end
+
+local function DiagSnapshot()
+    local snap = {}
+    for _, name in ipairs(GAMBLE_DIAG_ADDONS) do
+        local a = Addons.GetAddon(name)
+        if a.Exists and a.Ready then
+            if not State.diagSeen[name] then
+                DiagEcho("（讀取視窗 " .. name .. "…）")
+                State.diagSeen[name] = true
+            end
+            snap["視窗 " .. name] = DiagAddon(name)
+        end
+    end
+    local me = Api.PlayerPos()
+    local objs = Svc.Objects
+    for i = 0, objs.Length - 1 do
+        local o = objs[i]
+        if o ~= nil and tostring(o.ObjectKind) ~= "Player" then
+            local dx, dz = o.Position.X - me.X, o.Position.Z - me.Z
+            local d = math.sqrt(dx * dx + dz * dz)
+            if d <= GAMBLE_DIAG_RANGE then
+                snap["物件 #" .. i] = string.format("「%s」%s/%s 可選取:%s 位置(%.1f, %.1f, %.1f)",
+                    DiagMark(o.Name.TextValue), tostring(o.ObjectKind), tostring(o.SubKind), tostring(o.IsTargetable),
+                    o.Position.X, o.Position.Y, o.Position.Z)
+            end
+        end
+    end
+    return snap
+end
+
+local function GambleDiagTick()
+    if not Cfg.GambleDiag then return end
+    if Elapsed() - (State.diagAt or -10) < GAMBLE_DIAG_INTERVAL then return end
+    State.diagAt = Elapsed()
+    local snap, old = DiagSnapshot(), State.diagSnap
+    for k, v in pairs(snap) do
+        if old[k] == nil then DiagEcho(string.format("%.0f秒 + %s %s", Elapsed(), k, v))
+        elseif old[k] ~= v then DiagEcho(string.format("%.0f秒 ~ %s %s", Elapsed(), k, v)) end
+    end
+    for k, v in pairs(old) do
+        if snap[k] == nil then DiagEcho(string.format("%.0f秒 - %s %s", Elapsed(), k, v)) end
+    end
+    State.diagSnap = snap
+    -- 暫停期間收到的聊天訊息（OnChatMessage 只收集）
+    while State.diagChatShown < #State.gambleChat do
+        State.diagChatShown = State.diagChatShown + 1
+        DiagEcho("聊天：" .. DiagMark(State.gambleChat[State.diagChatShown]))
+    end
+end
+
 -- 強欲陷阱暫停（GambleMode = Pause；舊設定值 Ignore 也算）：停止移動（自動輸出和閃避在寶物庫內維持開著），不互動、不計逾時，讓你自己選大／小或做測試。
--- 繼續：大／小魔法球出現過、之後消失滿 5 秒；或在聊天框輸入 /echo #繼續。之後回到 DUNGEON_LOOT（開殘留寶箱 → 選門）
+-- 繼續：強欲陷阱視窗或大／小魔法球出現過、之後都消失滿 5 秒；或在聊天框輸入 /echo #繼續。之後回到 DUNGEON_LOOT（開殘留寶箱 → 選門）
 local GAMBLE_NAME_HINT = 15   -- 進入暫停幾秒後還看不到魔法球，就提示可能名稱不對
 
 function Handlers.DUNGEON_GAMBLE()
     if not InDuty() then return "DUNGEON_EXIT" end
     if not State.gamblePauseLogged then
         Api.NavStop()   -- 寶物庫內自動輸出和閃避維持開著，只停止移動
-        Log("強欲陷阱出現，腳本暫停：請自己選大／小（可以跑 GambleTest）。魔法球消失後自動繼續，或輸入 /echo #繼續")
+        Log("強欲陷阱出現，腳本暫停：請自己操作（挑戰／不挑戰、選大／小）。強欲陷阱結束後自動繼續，或輸入 /echo #繼續")
+        if Cfg.GambleDiag then Log("強欲陷阱診斷開始：每 " .. GAMBLE_DIAG_INTERVAL .. " 秒印出視窗、物件、聊天的變化（[G12][強欲] 開頭）") end
         State.gamblePauseLogged = true
     end
+    GambleDiagTick()
     local function Resume(reason)
-        State.gambleActive, State.resumeRequested = false, false
+        State.gambleActive, State.resumeRequested, State.gambleDiagOn = false, false, false
         Log(reason .. "，腳本繼續")
         return "DUNGEON_LOOT"
     end
     if State.resumeRequested then return Resume("收到 #繼續") end
-    if Api.GetEntity(Cfg.GambleBigName) ~= nil or Api.GetEntity(Cfg.GambleSmallName) ~= nil then
+    if Api.AddonReady(GAMBLE_WINDOW) or Api.GetEntity(Cfg.GambleBigName) ~= nil or Api.GetEntity(Cfg.GambleSmallName) ~= nil then
         State.gambleSeen, State.gambleGoneAt = true, nil
         return nil
     end
-    -- 還沒看到魔法球（還沒出現，或名稱不是「大」「小」）：一直等，不會自己繼續
+    -- 還沒看到強欲陷阱視窗或魔法球：一直等，不會自己繼續
     if not State.gambleSeen then
         if not State.gambleNameHinted and Elapsed() > GAMBLE_NAME_HINT then
-            Log("看不到「" .. Cfg.GambleBigName .. "」「" .. Cfg.GambleSmallName .. "」魔法球（名稱可能不同），處理完請輸入 /echo #繼續")
+            Log("看不到強欲陷阱視窗或「" .. Cfg.GambleBigName .. "」「" .. Cfg.GambleSmallName .. "」魔法球，處理完請輸入 /echo #繼續")
             State.gambleNameHinted = true
         end
         return nil
@@ -2200,7 +2330,7 @@ end
 -- 沒有提示就先等 DoorHintWait 秒，之後依 DoorChoice 選（Random 隨機 / First 第一個）
 function Handlers.DUNGEON_DOOR()
     if not InDuty() then return "DUNGEON_EXIT" end
-    if State.gambleActive and GamblePauses() then return "DUNGEON_GAMBLE" end   -- 寶箱打開後比較晚才出現強欲陷阱
+    if GambleDetected() and GamblePauses() then return "DUNGEON_GAMBLE" end   -- 寶箱打開後比較晚才出現強欲陷阱
     if Api.ConfirmYes() then return nil end
 
     if State.doorPos == nil then
@@ -2505,6 +2635,8 @@ local function Transition(next)
     if next == "DUNGEON_GAMBLE" then
         State.resumeRequested, State.gambleSeen, State.gambleGoneAt = false, false, nil
         State.gamblePauseLogged, State.gambleNameHinted = false, false
+        State.gambleDiagOn, State.gambleChat, State.diagChatShown = true, {}, 0
+        State.diagAt, State.diagSnap, State.diagSeen = nil, {}, {}
     end
     State.spotLogged = nil
     State.searchTries, State.lastSearch, State.manualPrompted = 0, nil, false

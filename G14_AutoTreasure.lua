@@ -321,6 +321,13 @@ local Log, LogError
 
 local Api = {}
 
+-- .NET 列舉轉成名稱：NLua 的 tostring(列舉) 會得到「BattleNpc: 2」這種格式，直接跟 "BattleNpc" 比永遠不相等
+--（SND 用的 NLua 1.7.9 實測）。只取冒號前的名稱再比
+local function EnumName(v)
+    local s = tostring(v)
+    return s:match("^([%w_]+)") or s
+end
+
 function Api.Condition(id)
     return Svc.Condition[id] == true
 end
@@ -626,7 +633,7 @@ function Api.NearestEnemyObject(maxDistance)
         for i = 0, objs.Length - 1 do
             local o = objs[i]
             if o ~= nil and o.IsTargetable and not o.IsDead
-                and tostring(o.ObjectKind) == "BattleNpc" and tonumber(o.SubKind) == 5 then
+                and EnumName(o.ObjectKind) == "BattleNpc" and tonumber(o.SubKind) == 5 then
                 local dx, dy, dz = o.Position.X - me.X, o.Position.Y - me.Y, o.Position.Z - me.Z
                 local d = dx * dx + dy * dy + dz * dz
                 if d <= bestDist then best, bestDist = o, d end
@@ -827,24 +834,42 @@ function Api.MarketFirstListing()
     return nil
 end
 
+-- SND 包裝的 IEnumerable（AddonWrapper.AtkValues / Nodes 等）轉成 Lua 陣列。
+-- 那些是 C# 編譯器產生的 iterator，NLua 叫不到它的 GetEnumerator（luanet.each 會出錯），
+-- 所以先丟進 .NET 的 List<object>，再用索引一筆一筆讀。失敗回傳 nil
+function Api.ToLuaList(enumerable)
+    local ok, items = pcall(function()
+        local ListType = luanet.import_type("System.Collections.Generic.List`1[System.Object]")
+        local list = ListType(enumerable)
+        local out = {}
+        for i = 0, list.Count - 1 do
+            local item = list[i]
+            if item == nil then item = list:get_Item(i) end
+            out[#out + 1] = item
+        end
+        return out
+    end)
+    if ok then return items end
+    return nil
+end
+
 -- 上架清單（ItemSearchResult）裡看得到的文字：AtkValues 的字串 + 顯示中的文字節點。
 -- 逐一讀、有界；節點只讀 Text 類型（讀不存在的東西 SND 會直接停掉腳本，pcall 攔不到）
+-- 數值、節點清單都轉不成功時回傳 nil（讀不到，不能核對）
 function Api.ResultTexts()
     local texts = {}
     local a = Addons.GetAddon("ItemSearchResult")
     if not (a.Exists and a.Ready) then return texts end
-    local i = 0
-    for v in luanet.each(a.AtkValues) do
-        local s = tostring(v.ValueString)
-        if s ~= "" and s ~= "nil" and not s:match("^%-?%d+$") then table.insert(texts, s) end
-        i = i + 1
-        if i >= 200 then break end
+    local values, nodes = Api.ToLuaList(a.AtkValues), Api.ToLuaList(a.Nodes)
+    if values == nil and nodes == nil then return nil end
+    for i, v in ipairs(values or {}) do
+        if i > 200 then break end
+        local ok, s = pcall(function() return tostring(v.ValueString) end)
+        if ok and s ~= "" and s ~= "nil" and not s:match("^%-?%d+$") then table.insert(texts, s) end
     end
-    local n = 0
-    for node in luanet.each(a.Nodes) do
-        n = n + 1
+    for n, node in ipairs(nodes or {}) do
         if n > 400 then break end
-        if tostring(node.NodeType) == "Text" and node.IsVisible then
+        if EnumName(node.NodeType) == "Text" and node.IsVisible then
             local t = tostring(node.Text)
             if t ~= "" and t ~= "nil" then table.insert(texts, t) end
         end
@@ -1814,6 +1839,9 @@ function Handlers.MB_LIST()
         end
         -- 要有這張圖的名稱，而且不能出現其他等級的地圖名稱（「陳舊的地圖G15」之類，數字不同就算別的圖）
         local texts, found, other = Api.ResultTexts(), false, nil
+        if texts == nil then
+            return StopBuyingUnverified("讀不到上架清單的文字，無法確認是不是「" .. Cfg.MapItemName .. "」")
+        end
         local myGrade = Cfg.MapItemName:match("地圖G(%d+)")
         for _, t in ipairs(texts) do
             if t:find(Cfg.MapItemName, 1, true) then found = true end
@@ -2294,18 +2322,16 @@ end
 local function DiagAddon(name)
     local a = Addons.GetAddon(name)
     local values, texts = {}, {}
-    local i = 0
-    for v in luanet.each(a.AtkValues) do
-        local s = tostring(v.ValueString)
-        if s ~= "" and s ~= "0" and s ~= "nil" and #values < 40 then table.insert(values, i .. "=" .. DiagMark(s)) end
-        i = i + 1
-        if i >= 300 then break end
+    local valueList, nodeList = Api.ToLuaList(a.AtkValues), Api.ToLuaList(a.Nodes)
+    if valueList == nil and nodeList == nil then return "（讀不到這個視窗的數值和節點）" end
+    for idx, v in ipairs(valueList or {}) do
+        if idx > 300 then break end
+        local ok, s = pcall(function() return tostring(v.ValueString) end)
+        if ok and s ~= "" and s ~= "0" and s ~= "nil" and #values < 40 then table.insert(values, (idx - 1) .. "=" .. DiagMark(s)) end
     end
-    local n = 0
-    for node in luanet.each(a.Nodes) do
-        n = n + 1
+    for n, node in ipairs(nodeList or {}) do
         if n > 600 or #texts >= 40 then break end
-        if tostring(node.NodeType) == "Text" and node.IsVisible then
+        if EnumName(node.NodeType) == "Text" and node.IsVisible then
             local t = tostring(node.Text)
             if t ~= "" and t ~= "nil" then table.insert(texts, node.Id .. "=" .. DiagMark(t)) end
         end
@@ -2329,7 +2355,7 @@ local function DiagSnapshot()
     local objs = Svc.Objects
     for i = 0, objs.Length - 1 do
         local o = objs[i]
-        if o ~= nil and tostring(o.ObjectKind) ~= "Player" then
+        if o ~= nil and EnumName(o.ObjectKind) ~= "Player" then
             local dx, dz = o.Position.X - me.X, o.Position.Z - me.Z
             local d = math.sqrt(dx * dx + dz * dz)
             if d <= GAMBLE_DIAG_RANGE then
@@ -2437,7 +2463,7 @@ end
 -- 到了下一層沒：不看位移，看有沒有下一層的寶箱或怪物（傳送後會有一段不能移動的過場動畫，
 -- 之後的 DUNGEON_CHEST / DUNGEON_PULL 都會等動畫結束才動）：
 --   * 寶箱：可互動，而且離這一層互動過的寶箱（State.floorChestPos）超過 FLOOR_CHEST_APART → DUNGEON_CHEST（第 1～4 層）
---   * 怪物：第 5 層一進去就是怪、沒有寶箱 → DUNGEON_PULL
+--   * 怪物（只在第 4 層 → 第 5 層時看）：第 5 層一進去就是怪、沒有寶箱 → DUNGEON_PULL
 -- 有就把層數 +1、清掉門的資料，回傳下一個步驟；都沒有回傳 nil
 local FLOOR_CHEST_APART = 20
 
@@ -2447,7 +2473,8 @@ local function NextFloorStep()
     if chest ~= nil and (State.floorChestPos == nil
         or Distance2D(chest.Position, State.floorChestPos) > FLOOR_CHEST_APART) then
         nextStep, how = "DUNGEON_CHEST", "看到寶箱"
-    elseif FindVaultEnemy() ~= nil then
+    elseif State.stage == MAX_STAGES - 1 and FindVaultEnemy() ~= nil then
+        -- 只有第 4 層 → 第 5 層才用怪物判斷（第 5 層沒有寶箱、直接打怪）；其他層看寶箱，避免看到別層的怪就提早判定
         nextStep, how = "DUNGEON_PULL", "看到怪物"
     end
     if nextStep == nil then return nil end

@@ -1,7 +1,7 @@
 --[=====[
 [[SND Metadata]]
 author: forgefk
-version: 0.3.1
+version: 0.3.2
 description: 強欲陷阱診斷：找出腳本讀得到牌面數字的地方。強欲陷阱出現（大／小魔法球出現）時執行，約 45 秒，期間可以照平常選大／小或不動。只讀資料、不會互動任何東西。結束後把聊天框的 [GambleTest] 訊息全部貼回來，並告訴我當時畫面上的牌是幾、你選了什麼、結果如何。
 function_chat_filters:
   OnChatMessage:
@@ -40,6 +40,12 @@ local function Echo(msg)
     end
 end
 
+-- .NET 列舉轉成名稱：NLua 的 tostring(列舉) 是「Text: 3」這種格式，只取冒號前的名稱再比
+local function EnumName(v)
+    local s = tostring(v)
+    return s:match("^([%w_]+)") or s
+end
+
 local function Mark(s)
     s = tostring(s)
     if s:match("^%s*[1-9]%s*$") or s:match("[^%d][1-9][^%d]") or s:match("^[1-9][^%d]") or s:match("[^%d][1-9]$") then
@@ -68,7 +74,7 @@ local function SnapshotObjects()
     local objs = Svc.Objects
     for i = 0, objs.Length - 1 do
         local o = objs[i]
-        if o ~= nil and tostring(o.ObjectKind) ~= "Player" then
+        if o ~= nil and EnumName(o.ObjectKind) ~= "Player" then
             local dx, dz = o.Position.X - me.X, o.Position.Z - me.Z
             local d = math.sqrt(dx * dx + dz * dz)
             if d <= RANGE then
@@ -95,6 +101,24 @@ local ADDONS = {
     "EventCountdown", "_EventCountdown", "MiniGame", "Tooltip", "GoldSaucerReward",
 }
 
+-- AddonWrapper.AtkValues / Nodes 是 C# 編譯器產生的 iterator，NLua 叫不到 GetEnumerator（luanet.each 會出錯），
+-- 所以先轉成 .NET 的 List<object> 再用索引讀。失敗回傳 nil
+local function ToLuaList(enumerable)
+    local ok, items = pcall(function()
+        local ListType = luanet.import_type("System.Collections.Generic.List`1[System.Object]")
+        local list = ListType(enumerable)
+        local out = {}
+        for i = 0, list.Count - 1 do
+            local item = list[i]
+            if item == nil then item = list:get_Item(i) end
+            out[#out + 1] = item
+        end
+        return out
+    end)
+    if ok then return items end
+    return nil
+end
+
 local function AddonVisible(name)
     local a = Addons.GetAddon(name)
     return a.Exists and a.Ready
@@ -103,18 +127,16 @@ end
 local function DescribeAddon(name)
     local a = Addons.GetAddon(name)
     local values, texts = {}, {}
-    local i = 0
-    for v in luanet.each(a.AtkValues) do
-        local s = tostring(v.ValueString)
-        if s ~= "" and s ~= "0" and s ~= "nil" and #values < 25 then table.insert(values, i .. "=" .. Mark(s)) end
-        i = i + 1
-        if i >= 200 then break end
+    local valueList, nodeList = ToLuaList(a.AtkValues), ToLuaList(a.Nodes)
+    if valueList == nil and nodeList == nil then return name .. " （讀不到這個視窗的數值和節點）" end
+    for idx, v in ipairs(valueList or {}) do
+        if idx > 200 then break end
+        local ok, s = pcall(function() return tostring(v.ValueString) end)
+        if ok and s ~= "" and s ~= "0" and s ~= "nil" and #values < 25 then table.insert(values, (idx - 1) .. "=" .. Mark(s)) end
     end
-    local n = 0
-    for node in luanet.each(a.Nodes) do
-        n = n + 1
+    for n, node in ipairs(nodeList or {}) do
         if n > 400 or #texts >= 25 then break end
-        if tostring(node.NodeType) == "Text" and node.IsVisible then
+        if EnumName(node.NodeType) == "Text" and node.IsVisible then
             local t = tostring(node.Text)
             if t ~= "" and t ~= "nil" then table.insert(texts, node.Id .. "=" .. Mark(t)) end
         end

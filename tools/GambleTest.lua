@@ -1,8 +1,8 @@
 --[=====[
 [[SND Metadata]]
 author: forgefk
-version: 0.3.2
-description: 強欲陷阱診斷：找出腳本讀得到牌面數字的地方。強欲陷阱出現（大／小魔法球出現）時執行，約 45 秒，期間可以照平常選大／小或不動。只讀資料、不會互動任何東西。結束後把聊天框的 [GambleTest] 訊息全部貼回來，並告訴我當時畫面上的牌是幾、你選了什麼、結果如何。
+version: 0.4.0
+description: 強欲陷阱診斷：找出腳本讀得到牌面數字的地方。強欲陷阱視窗（挑戰解除陷阱／不挑戰解除陷阱）出現時執行，約 120 秒；執行後按「挑戰解除陷阱」讓牌面數字出現，再照平常選大／小。腳本只讀資料、不會按任何按鈕。結束後把聊天框的 [GambleTest] 訊息全部貼回來，並告訴我畫面上的牌是幾、你選了什麼、結果如何。
 function_chat_filters:
   OnChatMessage:
     message_regex: "^(?!\\[GambleTest\\])"
@@ -21,7 +21,7 @@ function_chat_filters:
 --   * 每個階段開始前先印一行：萬一又停掉，看最後一行就知道是哪一步
 --   * 物件 ID（BaseId / DataId，不同 Dalamud 版本名稱不同）放到最後才試讀，前面的結果都已經印出來了
 
-local DURATION = 45     -- 總秒數
+local DURATION = 120    -- 總秒數（強欲陷阱視窗有 187 秒倒數：按挑戰、看牌、選大小都在這段時間內）
 local INTERVAL = 3      -- 每幾秒比對一次
 local RANGE    = 40     -- 物件掃描範圍
 
@@ -193,7 +193,7 @@ local function PrintAll(snap, empty)
 end
 
 StartedAt = os.clock()
-Echo("v0.3 開始（" .. DURATION .. " 秒，只讀資料）。目前地區 " .. tostring(Svc.ClientState.TerritoryType))
+Echo("v0.4 開始（" .. DURATION .. " 秒，只讀資料、不按按鈕）。目前地區 " .. tostring(Svc.ClientState.TerritoryType))
 
 Echo("1. 附近物件（" .. RANGE .. " 內，不含玩家）：")
 local objs = SnapshotObjects()
@@ -204,7 +204,7 @@ Echo("   " .. (status ~= "" and status or "無"))
 Echo("3. 顯示中的介面視窗：")
 local addons = SnapshotAddons()
 PrintAll(addons, "（候選視窗都沒有顯示）")
-Echo("接下來每 " .. INTERVAL .. " 秒只印有變化的部分，可以照平常選大／小或不動")
+Echo("接下來每 " .. INTERVAL .. " 秒只印有變化的部分。現在請按「挑戰解除陷阱」，看到牌之後照平常選大／小")
 
 local elapsed = 0
 while elapsed < DURATION do

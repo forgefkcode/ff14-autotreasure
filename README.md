@@ -19,7 +19,7 @@ SND（Something Need Doing）Lua 腳本，戰士單人循環挖寶與寶物庫�
 測試工具（`tools/`）：
 
 - 市場板搜尋診斷：https://raw.githubusercontent.com/forgefkcode/ff14-autotreasure/main/tools/MarketSearchTest.lua
-- 強欲陷阱診斷：https://raw.githubusercontent.com/forgefkcode/ff14-autotreasure/main/tools/GambleTest.lua
+- 強欲陷阱牌面數字診斷（強欲陷阱視窗出現時執行，按「挑戰解除陷阱」後看牌）：https://raw.githubusercontent.com/forgefkcode/ff14-autotreasure/main/tools/GambleTest.lua
 
 ## 需求
 

@@ -313,7 +313,7 @@ local Timeout = {
     DUNGEON_COMBAT   = 3600,  -- 副本限時 60 分鐘
     DUNGEON_CHEST    = 120,   -- 含跑到寶箱的時間
     DUNGEON_LOOT     = 180,   -- 含強欲陷阱
-    DUNGEON_DOOR     = 60,
+    DUNGEON_DOOR     = 90,    -- 含走到門附近
     DUNGEON_DOOR_WAIT = 60,
     DUNGEON_PASSAGE  = 60,
     DUNGEON_PULL     = 180,   -- 找怪 3 次的保底
@@ -2029,6 +2029,8 @@ function Handlers.DUNGEON_CHEST()
     if State.floorReadyAt == nil then
         if not Api.PlayerReady() or Api.Condition(Cond.occupiedInEvent) then return nil end
         State.floorReadyAt = Elapsed()
+        local entry = Api.PlayerPos()
+        State.floorEntryPos = { X = entry.X, Y = entry.Y, Z = entry.Z }   -- 這一層的入口（找不到門時用來估方向）
         if State.stage == 1 then
             Log("進入寶物庫，等 " .. VAULT_ENTRY_WAIT .. " 秒再走去寶箱")
         else
@@ -2351,6 +2353,64 @@ function Handlers.DUNGEON_GAMBLE()
     if Elapsed() - State.gambleGoneAt >= 5 then return Resume("強欲陷阱結束") end
 end
 
+-- 門還不能互動（離太遠，Api.TargetableObjects 找不到）時，先走到門附近：
+--   1. 看得到門物件（還不能互動）：走到這些門的中間；到了還不能互動，改走到最近的一扇
+--   2. 看不到門物件：從這一層的入口往寶箱的方向，越過寶箱繼續往前走（每次多 DOOR_SEARCH_STEP，最多 DOOR_SEARCH_MAX）
+local DOOR_NEAR        = 5
+local DOOR_SEARCH_STEP = 8
+local DOOR_SEARCH_MAX  = 40
+
+-- 名稱相符的所有物件（不管能不能互動）
+local function NamedObjects(name)
+    local list = {}
+    if name == nil or name == "" then return list end
+    local objs = Svc.Objects
+    for i = 0, objs.Length - 1 do
+        local o = objs[i]
+        if o ~= nil and o.Name.TextValue == name then table.insert(list, o) end
+    end
+    return list
+end
+
+local function ApproachDoors()
+    if Api.NavRunning() then return end
+    local me = Api.PlayerPos()
+    local all = NamedObjects(Cfg.DoorName)
+    local target, how = nil, nil
+    if #all > 0 then
+        local x, y, z = 0, 0, 0
+        for _, d in ipairs(all) do x, y, z = x + d.Position.X, y + d.Position.Y, z + d.Position.Z end
+        local mid = { X = x / #all, Y = y / #all, Z = z / #all }
+        if Distance2D(me, mid) > DOOR_NEAR and not State.doorMidReached then
+            target, how = mid, "門的中間"
+        else
+            State.doorMidReached = true   -- 到了中間還不能互動：改走到最近的一扇門
+            local best, bestDist = nil, math.huge
+            for _, d in ipairs(all) do
+                local dd = Distance2D(me, d.Position)
+                if dd < bestDist then best, bestDist = d, dd end
+            end
+            if bestDist <= 2 then return end   -- 已經在門旁邊：等它變成可互動
+            target, how = { X = best.Position.X, Y = best.Position.Y, Z = best.Position.Z }, "最近的門"
+        end
+    else
+        -- 看不到門：從入口往寶箱方向，越過寶箱往前找
+        local from, to = State.floorEntryPos, State.floorChestPos
+        if from == nil or to == nil then return end
+        local dx, dz = to.X - from.X, to.Z - from.Z
+        local len = math.max(math.sqrt(dx * dx + dz * dz), 0.01)
+        State.doorSearchDist = (State.doorSearchDist or 0) + DOOR_SEARCH_STEP
+        if State.doorSearchDist > DOOR_SEARCH_MAX then return end
+        target = { X = to.X + dx / len * State.doorSearchDist, Y = me.Y, Z = to.Z + dz / len * State.doorSearchDist }
+        how = "越過寶箱往前 " .. State.doorSearchDist .. " 碼找門"
+    end
+    if how ~= State.doorApproachLog then
+        Log(string.format("門還不能互動，先走到%s（%.0f 外）", how, Distance2D(me, target)))
+        State.doorApproachLog = how
+    end
+    Api.NavMoveTo(Api.PointOnFloor(target.X, target.Z) or Vector3(target.X, target.Y, target.Z), false)
+end
+
 -- 選門：場上可互動的「寶物庫的門」。有發光提示時只會剩一扇，選那扇（提示後最多再等 5 秒讓另一扇消失）；
 -- 沒有提示就先等 DoorHintWait 秒，之後依 DoorChoice 選（Random 隨機 / First 第一個）
 function Handlers.DUNGEON_DOOR()
@@ -2361,8 +2421,13 @@ function Handlers.DUNGEON_DOOR()
     if State.doorPos == nil then
         local doors = Api.TargetableObjects(Cfg.DoorName)
         if #doors == 0 then
+            ApproachDoors()   -- 門離太遠還不能互動：先走過去
             if TimedOut("DUNGEON_DOOR") then return "ERROR" end
             return nil
+        end
+        if State.doorApproachLog ~= nil then
+            Api.NavStop()   -- 走到門附近、門可以互動了：停下來選門（之後由 ApproachAndInteractObject 走到門旁邊）
+            State.doorApproachLog = nil
         end
         if #doors > 1 then
             if State.doorHint == nil and Elapsed() < Cfg.DoorHintWait then return nil end
@@ -2372,14 +2437,16 @@ function Handlers.DUNGEON_DOOR()
         if #doors > 1 and Cfg.DoorChoice == "Random" then idx = math.random(#doors) end
         local door = doors[idx]
         if #doors == 1 then
-            Log("第 " .. State.stage .. " 層選門：" .. (State.doorHint and (State.doorHint .. "的門發光，") or "") .. "只剩一扇")
+            Log("第 " .. State.stage .. " 層選門：" .. (State.doorHint and (State.doorHint .. "的門發光，只剩一扇") or "只有這一扇能互動"))
         else
             Log("第 " .. State.stage .. " 層選門：沒有提示，" .. (Cfg.DoorChoice == "Random" and "隨機" or "第一個") .. "（" .. idx .. "/" .. #doors .. "）")
         end
         -- 記下門和選門前站的位置（門開了之後物件可能消失，之後只用座標）
         State.doorObj = door
         State.doorPos = Vector3(door.Position.X, door.Position.Y, door.Position.Z)
-        State.doorFrom = Api.PlayerPos()
+        -- 走進門的方向用「這層寶箱 → 門」（寶箱在房間中間；角色可能已經走到門邊，用站的位置算方向會偏）
+        local me = Api.PlayerPos()
+        State.doorFrom = State.floorChestPos and { X = State.floorChestPos.X, Y = me.Y, Z = State.floorChestPos.Z } or me
     end
 
     if not Api.Condition(Cond.occupiedInEvent) and ApproachAndInteractObject(State.doorObj) then
@@ -2706,6 +2773,7 @@ local function Transition(next)
     State.lastChestAt = nil
     State.chestInteractAt, State.chestTries, State.floorReadyAt, State.chestLogged = nil, 0, nil, false
     State.pullAttempt, State.attemptStart = nil, nil
+    State.doorMidReached, State.doorSearchDist, State.doorApproachLog = false, nil, nil
     State.chestMovePos, State.chestMoveAt = nil, nil
     State.passLastPos, State.passTries = nil, 0
     if next == "DUNGEON_CHEST" then State.doorHint, State.gambleActive = nil, false end

@@ -294,7 +294,7 @@ local Timeout = {
     MB_CLOSE        = 10,
     DUNGEON_INIT     = 30,
     DUNGEON_COMBAT   = 3600,  -- 副本限時 60 分鐘
-    DUNGEON_ENTRY    = 120,   -- 入口：等 10 秒 + 往前走到傳送法陣 + 過場動畫
+    DUNGEON_ENTRY    = 150,   -- 入口：等 20 秒 + 直線往前走到傳送法陣 + 動畫
     DUNGEON_CHEST    = 120,   -- 含跑到寶箱的時間
     DUNGEON_LOOT     = 180,   -- 含強欲陷阱
     DUNGEON_DOOR     = 90,    -- 含走到門附近
@@ -2081,52 +2081,76 @@ local function ApproachChest(chest)
     return true
 end
 
--- 驚奇百寶城入口：進去後先直線往前走到傳送法陣（沒有物件名稱，只能沿進來時的面向往前走），
--- 踩上去會有一段不能操作的過場動畫；動畫結束後才去找寶箱（DUNGEON_CHEST，那時還要再走一段才靠近寶箱）。
-local ENTRY_STEP = 6
-local ENTRY_MAX  = 60
+-- 驚奇百寶城第 1 層入口（使用者指定的流程）：
+--   進入寶物庫後等 ENTRY_WAIT 秒 → 沿進來時的面向直線往前走（Path.MoveTo，不做路徑規劃）→ 一進入動畫就停下
+--   → 動畫結束後才交給 DUNGEON_CHEST 找寶箱位置並導航
+-- 「進入動畫」：過場／事件／讀取類的狀態旗標亮起，或往前走時角色 ENTRY_STALL 秒沒移動（被動畫鎖住）
+-- 「動畫結束」：那些旗標都沒亮、而且角色可以操作（這時已經停止移動），維持 FLOOR_SETTLE 秒
+local ENTRY_WAIT       = 20
+local ENTRY_DISTANCE   = 80
+local ENTRY_STALL      = 2
+local ENTRY_LOCK_FLAGS = { 25, 31, 32, 33, 35, 45, 51, 58, 78 }   -- Occupied、事件、過場、BetweenAreas(51)、WatchingCutscene(78)
+
+local function EntryLockFlags()
+    local on = {}
+    for _, id in ipairs(ENTRY_LOCK_FLAGS) do
+        if Api.Condition(id) then table.insert(on, id) end
+    end
+    return on
+end
+
 function Handlers.DUNGEON_ENTRY()
     if not InDuty() then return "DUNGEON_EXIT" end
-    -- 踩到法陣、過場動畫中：停下來等它結束（還沒開始往前走時的事件動畫，例如任務開始，只等待、不算踩到）
-    if InCutscene() then
-        if State.entryDist == nil then return nil end
-        if not State.entryCutscene then
-            Api.NavStop()
-            Log("踩到傳送法陣，等過場動畫結束")
-            State.entryCutscene = true
+
+    -- 1. 進去後先等 ENTRY_WAIT 秒，再沿面向直線往前走
+    if State.entryStart == nil then
+        if Elapsed() < ENTRY_WAIT then
+            if not State.entryWaitLogged then
+                Log("進入驚奇百寶城，等 " .. ENTRY_WAIT .. " 秒後直線往前走")
+                State.entryWaitLogged = true
+            end
+            return nil
         end
-        State.entryCutsceneEnd = nil
+        local p, dir = Api.PlayerPos(), FacingDir()
+        State.entryStart = { X = p.X, Y = p.Y, Z = p.Z }
+        State.entryMovePos, State.entryMoveAt = p, Elapsed()
+        if dir == nil then
+            LogError("讀不到角色面向，請手動往前走到傳送法陣上")
+        else
+            Log(string.format("往前直走，直到進入動畫（面向 %.2f, %.2f）", dir[1], dir[2]))
+            Api.MoveStraight({ X = p.X + dir[1] * ENTRY_DISTANCE, Y = p.Y, Z = p.Z + dir[2] * ENTRY_DISTANCE })
+        end
         return nil
     end
-    if State.entryCutscene then
-        State.entryCutsceneEnd = State.entryCutsceneEnd or Elapsed()
-        if Elapsed() - State.entryCutsceneEnd < FLOOR_SETTLE then return nil end
-        State.entryCircleDone = true
-        Api.NavStop()
-        Log("過場動畫結束，重新規劃到寶箱的路徑")
-        return "DUNGEON_CHEST"
-    end
-    -- 能操作後先等 VAULT_ENTRY_WAIT 秒（任務開始前可能有屏障），再沿面向往前走
-    if State.entryStart == nil then
-        if not Api.PlayerReady() then return nil end
-        local p = Api.PlayerPos()
-        State.entryStart = { X = p.X, Y = p.Y, Z = p.Z, at = Elapsed(), dir = FacingDir() }
-        Log("進入驚奇百寶城，等 " .. VAULT_ENTRY_WAIT .. " 秒後往前走到傳送法陣")
-        if State.entryStart.dir == nil then LogError("讀不到角色面向，請手動走到傳送法陣上") end
-    end
-    if Elapsed() - State.entryStart.at < VAULT_ENTRY_WAIT then return nil end
-    if State.entryStart.dir ~= nil and not Api.NavRunning() then
-        State.entryDist = (State.entryDist or 0) + ENTRY_STEP
-        if State.entryDist > ENTRY_MAX then
-            LogError("往前走了 " .. ENTRY_MAX .. " 碼還沒踩到傳送法陣")
-            return "ERROR"
+
+    -- 2. 一進入動畫就停下
+    if not State.entryCutscene then
+        local flags, me = EntryLockFlags(), Api.PlayerPos()
+        if Distance2D(me, State.entryMovePos) > 0.3 then State.entryMovePos, State.entryMoveAt = me, Elapsed() end
+        local stalled = Elapsed() - State.entryMoveAt >= ENTRY_STALL
+        if #flags > 0 or stalled then
+            Api.NavStop()
+            State.entryCutscene = true
+            Log("進入動畫（" .. (#flags > 0 and ("狀態旗標 " .. table.concat(flags, ","))
+                or ("角色 " .. ENTRY_STALL .. " 秒沒移動")) .. string.format("，往前走了 %.0f 碼），等動畫結束",
+                Distance2D(me, State.entryStart)))
+            return nil
         end
-        local d, s0 = State.entryStart.dir, State.entryStart
-        local x, z = s0.X + d[1] * State.entryDist, s0.Z + d[2] * State.entryDist
-        if State.entryDist == ENTRY_STEP then Log("往前直走，找傳送法陣") end
-        Api.VaultMoveTo(x, s0.Y, z)
+        if TimedOut("DUNGEON_ENTRY") then return "ERROR" end
+        return nil
     end
-    if TimedOut("DUNGEON_ENTRY") then return "ERROR" end
+
+    -- 3. 動畫結束（旗標都沒亮、角色可以操作，維持 FLOOR_SETTLE 秒）後才去找寶箱
+    if #EntryLockFlags() > 0 or not Api.PlayerReady() then
+        State.entryEndAt = nil
+        if TimedOut("DUNGEON_ENTRY") then return "ERROR" end
+        return nil
+    end
+    State.entryEndAt = State.entryEndAt or Elapsed()
+    if Elapsed() - State.entryEndAt < FLOOR_SETTLE then return nil end
+    State.entryCircleDone = true
+    Log("動畫結束，找寶箱位置並導航")
+    return "DUNGEON_CHEST"
 end
 
 function Handlers.DUNGEON_CHEST()
@@ -2757,7 +2781,8 @@ local function Transition(next)
     State.pullAttempt, State.attemptStart = nil, nil
     State.doorMidReached, State.doorSearchDist, State.doorApproachLog = false, nil, nil
     State.forwardDist = nil
-    State.entryStart, State.entryDist, State.entryCutscene, State.entryCutsceneEnd = nil, nil, false, nil
+    State.entryStart, State.entryCutscene, State.entryEndAt, State.entryWaitLogged = nil, false, nil, false
+    State.entryMovePos, State.entryMoveAt = nil, nil
     State.chestMovePos, State.chestMoveAt, State.chestStalls = nil, nil, 0
     State.passLastPos, State.passTries = nil, 0
     if next == "DUNGEON_CHEST" then State.doorHint, State.gambleActive = nil, false end

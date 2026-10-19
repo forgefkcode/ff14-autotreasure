@@ -2039,17 +2039,6 @@ end
 
 -- 一直走到寶箱旁邊，夠近了才互動：直接以寶箱座標為目的地（不用 /vnav movetarget，它會停在互動距離外）。
 -- 走到 CHEST_INTERACT_RANGE 以內，或 CHEST_STALL 秒沒前進（被寶箱擋住）就選取並互動。回傳 true 表示已送出互動
--- 正在播不能操作的動畫（過場、事件）：用狀態旗標判斷。
--- 不用 Player.IsBusy：ECommons 的 IsBusy 在移動中、戰鬥中也是 true，舊的導航還在跑時會一直等不到
-local CUTSCENE_FLAGS = { 31, 32, 33, 35, 58, 78 }   -- OccupiedInEvent / QuestEvent / Occupied33 / CutSceneEvent / WatchingCutscene(78)
-
-local function InCutscene()
-    for _, id in ipairs(CUTSCENE_FLAGS) do
-        if Api.Condition(id) then return true end
-    end
-    return false
-end
-
 -- 角色面向的水平方向（Svc.Objects[0] 是自己；Rotation 0 = 面向 +Z，前方 = (sin, cos)）。讀不到回 nil
 local function FacingDir()
     local ok, rot = pcall(function() return Svc.Objects[0].Rotation end)
@@ -2121,10 +2110,10 @@ function Handlers.DUNGEON_CHEST()
         return GamblePauses() and "DUNGEON_GAMBLE" or "DUNGEON_LOOT"
     end
 
-    -- 進入這一層會有一段不能操作的動畫：等動畫結束才開始（只等這一次），先停掉動畫前的導航、從新位置重新規劃路徑
+    -- 進入這一層會有一段不能操作的動畫：等到角色可以操作才開始，只等這一次
+    -- （之後不再檢查：走路中 Player.IsBusy 也可能是 true）
     if State.floorReadyAt == nil then
-        if InCutscene() or Api.Condition(Cond.betweenAreas) then return nil end
-        Api.NavStop()   -- 動畫前的導航（往法陣、往門後走）作廢：傳送後位置變了，到了這裡重新規劃路徑
+        if not Api.PlayerReady() or Api.Condition(Cond.occupiedInEvent) then return nil end
         State.floorReadyAt = Elapsed()
         local entry = Api.PlayerPos()
         State.floorEntryPos = { X = entry.X, Y = entry.Y, Z = entry.Z }   -- 這一層的入口（找不到門時用來估方向）
@@ -2639,8 +2628,7 @@ function Handlers.DUNGEON_PULL()
     if Api.Condition(Cond.inCombat) then return "DUNGEON_COMBAT" end
     -- 等過場動畫結束、角色能移動（只等這一次）
     if State.floorReadyAt == nil then
-        if InCutscene() or Api.Condition(Cond.betweenAreas) then return nil end
-        Api.NavStop()   -- 動畫前的導航（往法陣、往門後走）作廢：傳送後位置變了，到了這裡重新規劃路徑
+        if not Api.PlayerReady() or Api.Condition(Cond.occupiedInEvent) then return nil end
         State.floorReadyAt = Elapsed()
         Log("第 " .. State.stage .. " 層：可以操作了，去找怪物")
     end

@@ -105,7 +105,7 @@ configs:
     description: 穿過門後再往前走多遠去踩傳送法陣（法陣不能互動、沒有名稱，只能往前走）
   GambleMode:
     default: "Pause"
-    description: 強欲陷阱（大／小兩顆魔法球）的處理：Pause（暫停，讓你自己處理；舊設定值 Ignore 也當 Pause）/ Big（選大）/ Small（選小）
+    description: G14 不看這個設定：遇到強欲陷阱一律自動放棄（不挑戰），放棄不了才暫停讓你手動處理
   GambleBigName:
     default: "大"
     description: 強欲陷阱「大」魔法球的物件名稱
@@ -2548,10 +2548,62 @@ end
 
 -- 強欲陷阱暫停（GambleMode = Pause；舊設定值 Ignore 也算）：停止移動（自動輸出和閃避在寶物庫內維持開著），不互動、不計逾時，讓你自己選大／小或做測試。
 -- 繼續：強欲陷阱視窗或大／小魔法球出現過、之後都消失滿 5 秒；或在聊天框輸入 /echo #繼續。之後回到 DUNGEON_LOOT（開殘留寶箱 → 選門）
+-- G14：遇到強欲陷阱一律放棄（看不到卡牌數字，猜不了）＝按「不挑戰解除陷阱」直接開箱，不管 GambleMode。
+-- callback 參數取自 McVaxius/LootGoblin（國際版插件實際觀察；繁中版尚未驗證）：不挑戰／收手 = TreasureHighLow true 1，
+-- 點「不挑戰」時遊戲送出的是 false -2 → true 1。依序試：true 1 → (false -2, true 1) → true 1，每次間隔 GAMBLE_DECLINE_GAP 秒。
+-- 保險（改回暫停讓你手動處理）：試完視窗還在；大／小魔法球變成可互動（表示按成挑戰了）；只有聊天訊息、視窗 GAMBLE_WINDOW_WAIT 秒都沒出現
+local GAMBLE_DECLINE_GAP  = 2
+local GAMBLE_WINDOW_WAIT  = 10
+local GAMBLE_DECLINE_STEPS = {
+    { "true 1" },
+    { "false -2", "true 1" },
+    { "true 1" },
+}
+
 local GAMBLE_NAME_HINT = 15   -- 進入暫停幾秒後還看不到魔法球，就提示可能名稱不對
 
 function Handlers.DUNGEON_GAMBLE()
     if not InDuty() then return "DUNGEON_EXIT" end
+
+    -- 一律放棄：按「不挑戰解除陷阱」。放棄不了才往下走到暫停（手動處理）
+    if not State.gambleManual then
+        local orbs = Api.GetEntity(Cfg.GambleBigName) ~= nil or Api.GetEntity(Cfg.GambleSmallName) ~= nil
+        if orbs then
+            LogError("大／小魔法球變成可以互動了（可能按成「挑戰」），改成暫停，請手動處理")
+            State.gambleManual = true
+        elseif Api.AddonReady(GAMBLE_WINDOW) then
+            Api.NavStop()
+            if Elapsed() - (State.declineAt or -10) >= GAMBLE_DECLINE_GAP then
+                State.declineTries = (State.declineTries or 0) + 1
+                local step = GAMBLE_DECLINE_STEPS[State.declineTries]
+                if step == nil then
+                    LogError("按了 " .. #GAMBLE_DECLINE_STEPS .. " 次「不挑戰」，強欲陷阱視窗還在，改成暫停，請手動處理")
+                    State.gambleManual = true
+                else
+                    Log("強欲陷阱：放棄，按「不挑戰解除陷阱」（第 " .. State.declineTries .. " 次：" .. table.concat(step, " → ") .. "）")
+                    for k, args in ipairs(step) do
+                        if k > 1 then yield("/wait 0.3") end
+                        yield("/callback " .. GAMBLE_WINDOW .. " " .. args)
+                    end
+                    State.declineAt = Elapsed()
+                end
+            end
+            if not State.gambleManual then return nil end
+        elseif (State.declineTries or 0) > 0 then
+            -- 視窗關了：放棄成功，等寶箱打開再回去收尾、選門
+            State.declineDoneAt = State.declineDoneAt or Elapsed()
+            if Elapsed() - State.declineDoneAt < 3 then return nil end
+            State.gambleActive, State.gambleDiagOn = false, false
+            Log("已放棄強欲陷阱，繼續")
+            return "DUNGEON_LOOT"
+        elseif Elapsed() > GAMBLE_WINDOW_WAIT then
+            LogError("收到強欲陷阱的訊息，但 " .. GAMBLE_WINDOW_WAIT .. " 秒都沒看到強欲陷阱視窗，改成暫停，請手動處理")
+            State.gambleManual = true
+        else
+            return nil   -- 等強欲陷阱視窗出現
+        end
+    end
+
     if not State.gamblePauseLogged then
         Api.NavStop()   -- 寶物庫內自動輸出和閃避維持開著，只停止移動
         Log("強欲陷阱出現，腳本暫停：請自己操作（挑戰／不挑戰、選大／小）。強欲陷阱結束後自動繼續，或輸入 /echo #繼續")
@@ -2898,6 +2950,7 @@ local function Transition(next)
         State.gambleDiagOn, State.gambleChat, State.diagChatShown = true, {}, 0
         State.diagAt, State.diagSnap, State.diagSeen = nil, {}, {}
         State.diagWin, State.diagMemNoted = nil, false
+        State.gambleManual, State.declineTries, State.declineAt, State.declineDoneAt = false, nil, nil, nil
     end
     State.spotLogged = nil
     State.searchTries, State.lastSearch, State.manualPrompted = 0, nil, false

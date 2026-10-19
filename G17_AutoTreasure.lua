@@ -293,7 +293,6 @@ local Timeout = {
     MB_CLOSE        = 10,
     DUNGEON_INIT     = 30,
     DUNGEON_COMBAT   = 3600,  -- 副本限時 60 分鐘
-    DUNGEON_ENTRY    = 150,   -- 入口：等 20 秒 + 直線往前走到傳送法陣 + 動畫
     DUNGEON_CHEST    = 120,   -- 含跑到寶箱的時間
     DUNGEON_LOOT     = 180,   -- 含強欲陷阱
     DUNGEON_DOOR     = 60,
@@ -1918,87 +1917,6 @@ function Handlers.DUNGEON_INIT()
     -- 進寶物庫就開自動輸出和閃避，一直開到離開寶物庫（寶物庫內一般的關閉呼叫都會跳過，見 Api.WrathOff）
     Api.WrathOn()
     Log("進入寶物庫，開啟自動輸出與閃避")
-    return "DUNGEON_ENTRY"
-end
-
-local FLOOR_SETTLE = 1.5   -- 動畫結束、可以操作後再等幾秒才動
-
--- 角色面向的水平方向（Svc.Objects[0] 是自己；Rotation 0 = 面向 +Z，前方 = (sin, cos)）。讀不到回 nil
-local function FacingDir()
-    local ok, rot = pcall(function() return Svc.Objects[0].Rotation end)
-    if ok and type(rot) == "number" then return { math.sin(rot), math.cos(rot) } end
-    return nil
-end
-
--- 寶物庫第 1 層入口（使用者指定的流程，同 G14）：
---   進入寶物庫後等 ENTRY_WAIT 秒 → 沿進來時的面向直線往前走（Path.MoveTo，不做路徑規劃）→ 一進入動畫就停下
---   → 動畫結束後才交給 DUNGEON_CHEST 找寶箱位置並導航
--- 「進入動畫」：過場／事件／讀取類的狀態旗標亮起，或往前走時角色 ENTRY_STALL 秒沒移動（被動畫鎖住）
--- 「動畫結束」：那些旗標都沒亮、而且角色可以操作（這時已經停止移動），維持 FLOOR_SETTLE 秒
-local ENTRY_WAIT       = 20
-local ENTRY_DISTANCE   = 80
-local ENTRY_STALL      = 2
-local ENTRY_LOCK_FLAGS = { 25, 31, 32, 33, 35, 45, 51, 58, 78 }   -- Occupied、事件、過場、BetweenAreas(51)、WatchingCutscene(78)
-
-local function EntryLockFlags()
-    local on = {}
-    for _, id in ipairs(ENTRY_LOCK_FLAGS) do
-        if Api.Condition(id) then table.insert(on, id) end
-    end
-    return on
-end
-
-function Handlers.DUNGEON_ENTRY()
-    if not InDuty() then return "DUNGEON_EXIT" end
-
-    -- 1. 進去後先等 ENTRY_WAIT 秒，再沿面向直線往前走
-    if State.entryStart == nil then
-        if Elapsed() < ENTRY_WAIT then
-            if not State.entryWaitLogged then
-                Log("進入寶物庫，等 " .. ENTRY_WAIT .. " 秒後直線往前走")
-                State.entryWaitLogged = true
-            end
-            return nil
-        end
-        local p, dir = Api.PlayerPos(), FacingDir()
-        State.entryStart = { X = p.X, Y = p.Y, Z = p.Z }
-        State.entryMovePos, State.entryMoveAt = p, Elapsed()
-        if dir == nil then
-            LogError("讀不到角色面向，請手動往前走到傳送法陣上")
-        else
-            Log(string.format("往前直走，直到進入動畫（面向 %.2f, %.2f）", dir[1], dir[2]))
-            Api.MoveStraight({ X = p.X + dir[1] * ENTRY_DISTANCE, Y = p.Y, Z = p.Z + dir[2] * ENTRY_DISTANCE })
-        end
-        return nil
-    end
-
-    -- 2. 一進入動畫就停下
-    if not State.entryCutscene then
-        local flags, me = EntryLockFlags(), Api.PlayerPos()
-        if Distance2D(me, State.entryMovePos) > 0.3 then State.entryMovePos, State.entryMoveAt = me, Elapsed() end
-        local stalled = Elapsed() - State.entryMoveAt >= ENTRY_STALL
-        if #flags > 0 or stalled then
-            Api.NavStop()
-            State.entryCutscene = true
-            Log("進入動畫（" .. (#flags > 0 and ("狀態旗標 " .. table.concat(flags, ","))
-                or ("角色 " .. ENTRY_STALL .. " 秒沒移動")) .. string.format("，往前走了 %.0f 碼），等動畫結束",
-                Distance2D(me, State.entryStart)))
-            return nil
-        end
-        if TimedOut("DUNGEON_ENTRY") then return "ERROR" end
-        return nil
-    end
-
-    -- 3. 動畫結束（旗標都沒亮、角色可以操作，維持 FLOOR_SETTLE 秒）後才去找寶箱
-    if #EntryLockFlags() > 0 or not Api.PlayerReady() then
-        State.entryEndAt = nil
-        if TimedOut("DUNGEON_ENTRY") then return "ERROR" end
-        return nil
-    end
-    State.entryEndAt = State.entryEndAt or Elapsed()
-    if Elapsed() - State.entryEndAt < FLOOR_SETTLE then return nil end
-    State.entryCircleDone = true
-    Log("動畫結束，找寶箱位置並導航")
     return "DUNGEON_CHEST"
 end
 
@@ -2277,8 +2195,6 @@ local function Transition(next)
     State.favTries = 0
     State.lastChestAt = nil
     State.passLastPos, State.passTries = nil, 0
-    State.entryStart, State.entryCutscene, State.entryEndAt, State.entryWaitLogged = nil, false, nil, false
-    State.entryMovePos, State.entryMoveAt = nil, nil
     if next == "DUNGEON_CHEST" then State.doorHint, State.gambleActive = nil, false end
     State.spotLogged = nil
     State.searchTries, State.lastSearch, State.manualPrompted = 0, nil, false

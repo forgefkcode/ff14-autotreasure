@@ -2359,19 +2359,17 @@ function Handlers.DUNGEON_LOOT()
     return "DUNGEON_DOOR"
 end
 
--- 強欲陷阱診斷（GambleDiag = true 時，暫停期間自動跑）：找出腳本讀得到牌面數字的地方。
--- 每 GAMBLE_DIAG_INTERVAL 秒讀一次強欲陷阱視窗、其他候選視窗、附近物件，只印有變化的部分；看起來像 1～9 的數字標 ★。
--- 暫停期間的聊天訊息也全部記下來印出。不會按任何按鈕、不互動。
--- 安全注意（同 tools/GambleTest.lua v0.3）：讀到不存在的 .NET 欄位或 C# 出錯，SND 會直接停掉腳本，pcall 攔不到。所以
---   * 物件只讀實測可用的欄位：Name、ObjectKind、SubKind、IsTargetable、Position
---   * 視窗只讀 Exists 而且顯示中的；數值用 AtkValues 逐一讀（有界），節點只讀類型是 Text 的文字
---   * 第一次讀某個視窗前先印一行：萬一停掉，看最後一行就知道是哪個
-local GAMBLE_DIAG_INTERVAL = 2
-local GAMBLE_DIAG_RANGE    = 30
-local GAMBLE_DIAG_ADDONS   = {
-    GAMBLE_WINDOW, "SelectYesno", "SelectString", "SelectIconString", "Talk", "_BattleTalk", "_ScreenText",
-    "_TextError", "_WideText", "_PopUpText", "ScreenInfo", "ScreenInfoFrontBack", "_ToDoList", "_NotificationTimer",
-}
+-- 強欲陷阱診斷（GambleDiag = true 時，暫停期間自動跑；做法同 tools/GambleTest.lua v0.5）：找出寶箱上方立體卡牌的數字存在哪裡。
+-- 每 GAMBLE_DIAG_INTERVAL 秒讀寶箱周圍物件的記憶體：EventState 0x70、BaseId 0x84、Visibility 0x97、TargetableStatus 0x9A，
+-- EventObj 另讀 SharedTimelineState 0x1B2、Arg 0x1B4、Flags 0x1B8（FFXIVClientStructs EventObject，0x1C0），
+-- 並比對整個結構的原始 bytes（略過距離、目標狀態等一直跳動的欄位），只印有變化的部分，1～9 標 ★。
+-- 也印強欲陷阱視窗、確認框的變化和暫停期間的聊天訊息。不會按任何按鈕、不互動。
+-- 讀記憶體用 Marshal.ReadByte(IntPtr.Add(位址, 位移))（NLua 1.7.9 實測；兩個參數的多載會讀到 .NET 物件本身）。
+-- 只讀物件結構範圍內，第一次讀記憶體、第一次讀某個視窗前先印一行：萬一 SND 停掉，看最後一行就知道是哪一步
+local GAMBLE_DIAG_INTERVAL = 1
+local GAMBLE_DIAG_RANGE    = 15
+local GAMBLE_DIAG_ADDONS   = { GAMBLE_WINDOW, "SelectYesno" }
+local DIAG_SKIP = { [0x93] = true, [0x94] = true, [0x95] = true, [0x96] = true, [0x9B] = true }
 
 local function DiagMark(s)
     s = tostring(s)
@@ -2379,6 +2377,11 @@ local function DiagMark(s)
         return "★" .. s
     end
     return s
+end
+
+local function DiagStar(v)
+    if type(v) == "number" and v >= 1 and v <= 9 then return "★" .. v end
+    return tostring(v)
 end
 
 -- /echo 走遊戲聊天框，一則最多 500 bytes（中文一字 3 bytes）：超過 400 bytes 就依 UTF-8 字元邊界切成多則
@@ -2416,8 +2419,92 @@ local function DiagAddon(name)
     return "數值：" .. (#values > 0 and table.concat(values, " ") or "無") .. " ｜文字：" .. (#texts > 0 and table.concat(texts, " ") or "無")
 end
 
-local function DiagSnapshot()
+local DiagMarshal, DiagIntPtr = nil, nil
+local function DiagRead(addr, ofs, size)
+    DiagMarshal = DiagMarshal or luanet.import_type("System.Runtime.InteropServices.Marshal")
+    DiagIntPtr = DiagIntPtr or luanet.import_type("System.IntPtr")
+    local p = DiagIntPtr.Add(addr, ofs)
+    if size == 1 then return DiagMarshal.ReadByte(p) end
+    if size == 2 then
+        local v = DiagMarshal.ReadInt16(p)
+        return v < 0 and v + 65536 or v
+    end
+    local v = DiagMarshal.ReadInt32(p)
+    return v < 0 and v + 4294967296 or v
+end
+
+-- 回傳 (欄位描述, 原始 bytes 表)
+local function DiagReadObject(o)
+    local addr = o.Address
+    if addr == nil then return "（讀不到位址）", {} end
+    if not State.diagMemNoted then
+        DiagEcho("（第一次讀物件記憶體…）")
+        State.diagMemNoted = true
+    end
+    local isEventObj = EnumName(o.ObjectKind) == "EventObj"
+    local fields = string.format("EventState=%s BaseId=%d Visibility=%s Targetable=%s",
+        DiagStar(DiagRead(addr, 0x70, 1)), DiagRead(addr, 0x84, 4), DiagStar(DiagRead(addr, 0x97, 1)), DiagStar(DiagRead(addr, 0x9A, 1)))
+    if isEventObj then
+        fields = fields .. string.format(" Timeline=%s Arg=%s Flags=%s",
+            DiagStar(DiagRead(addr, 0x1B2, 2)), DiagStar(DiagRead(addr, 0x1B4, 4)), DiagStar(DiagRead(addr, 0x1B8, 1)))
+    end
+    local raw = {}
+    for ofs = 0, (isEventObj and 0x1BF or 0x19F) do
+        if not DIAG_SKIP[ofs] then raw[ofs] = DiagRead(addr, ofs, 1) end
+    end
+    return fields, raw
+end
+
+-- 寶箱周圍的物件（場景物件、寶箱）：{ [物件索引] = { label, fields, raw } }
+local function DiagObjects()
+    local objs = Svc.Objects
+    local center = nil
+    for i = 0, objs.Length - 1 do
+        local o = objs[i]
+        if o ~= nil and o.Name.TextValue == Cfg.DungeonChestName then center = o.Position; break end
+    end
+    center = center or Api.PlayerPos()
     local snap = {}
+    for i = 0, objs.Length - 1 do
+        local o = objs[i]
+        if o ~= nil then
+            local kind = EnumName(o.ObjectKind)
+            if kind == "EventObj" or kind == "Treasure" then
+                local dx, dz = o.Position.X - center.X, o.Position.Z - center.Z
+                if math.sqrt(dx * dx + dz * dz) <= GAMBLE_DIAG_RANGE then
+                    local ok, fields, raw = pcall(DiagReadObject, o)
+                    if not ok then fields, raw = "（讀取失敗：" .. tostring(fields) .. "）", {} end
+                    snap[i] = {
+                        label = string.format("#%d「%s」%s (%.1f, %.1f)", i, o.Name.TextValue, kind, o.Position.X, o.Position.Z),
+                        fields = fields, raw = raw,
+                    }
+                end
+            end
+        end
+    end
+    return snap
+end
+
+local function DiagRawDiff(old, new)
+    local parts = {}
+    for ofs, v in pairs(new) do
+        if old[ofs] ~= nil and old[ofs] ~= v then
+            table.insert(parts, { ofs, string.format("0x%X:%d→%s", ofs, old[ofs], DiagStar(v)) })
+        end
+    end
+    table.sort(parts, function(a, b) return a[1] < b[1] end)
+    local out = {}
+    for k = 1, math.min(#parts, 16) do out[k] = parts[k][2] end
+    if #parts > 16 then table.insert(out, "…共 " .. #parts .. " 處") end
+    return table.concat(out, " ")
+end
+
+local function GambleDiagTick()
+    if not Cfg.GambleDiag then return end
+    if Elapsed() - (State.diagAt or -10) < GAMBLE_DIAG_INTERVAL then return end
+    State.diagAt = Elapsed()
+    -- 視窗：強欲陷阱視窗、確認框
+    local win = {}
     for _, name in ipairs(GAMBLE_DIAG_ADDONS) do
         local a = Addons.GetAddon(name)
         if a.Exists and a.Ready then
@@ -2425,39 +2512,33 @@ local function DiagSnapshot()
                 DiagEcho("（讀取視窗 " .. name .. "…）")
                 State.diagSeen[name] = true
             end
-            snap["視窗 " .. name] = DiagAddon(name)
+            win[name] = DiagAddon(name)
         end
     end
-    local me = Api.PlayerPos()
-    local objs = Svc.Objects
-    for i = 0, objs.Length - 1 do
-        local o = objs[i]
-        if o ~= nil and EnumName(o.ObjectKind) ~= "Player" then
-            local dx, dz = o.Position.X - me.X, o.Position.Z - me.Z
-            local d = math.sqrt(dx * dx + dz * dz)
-            if d <= GAMBLE_DIAG_RANGE then
-                snap["物件 #" .. i] = string.format("「%s」%s/%s 可選取:%s 位置(%.1f, %.1f, %.1f)",
-                    DiagMark(o.Name.TextValue), tostring(o.ObjectKind), tostring(o.SubKind), tostring(o.IsTargetable),
-                    o.Position.X, o.Position.Y, o.Position.Z)
-            end
+    local oldWin = State.diagWin or {}
+    for k, v in pairs(win) do
+        if oldWin[k] ~= v then DiagEcho(string.format("%.0f秒 視窗 %s %s", Elapsed(), k, v)) end
+    end
+    for k in pairs(oldWin) do
+        if win[k] == nil then DiagEcho(string.format("%.0f秒 視窗 %s 關閉", Elapsed(), k)) end
+    end
+    State.diagWin = win
+    -- 寶箱周圍物件的記憶體
+    local cur, prev = DiagObjects(), State.diagSnap
+    for k, v in pairs(cur) do
+        local p = prev[k]
+        if p == nil then
+            DiagEcho(string.format("%.0f秒 + %s %s", Elapsed(), v.label, v.fields))
+        else
+            if p.fields ~= v.fields then DiagEcho(string.format("%.0f秒 ~ %s %s", Elapsed(), v.label, v.fields)) end
+            local diff = DiagRawDiff(p.raw, v.raw)
+            if diff ~= "" then DiagEcho(string.format("%.0f秒   %s 原始變化：%s", Elapsed(), v.label, diff)) end
         end
     end
-    return snap
-end
-
-local function GambleDiagTick()
-    if not Cfg.GambleDiag then return end
-    if Elapsed() - (State.diagAt or -10) < GAMBLE_DIAG_INTERVAL then return end
-    State.diagAt = Elapsed()
-    local snap, old = DiagSnapshot(), State.diagSnap
-    for k, v in pairs(snap) do
-        if old[k] == nil then DiagEcho(string.format("%.0f秒 + %s %s", Elapsed(), k, v))
-        elseif old[k] ~= v then DiagEcho(string.format("%.0f秒 ~ %s %s", Elapsed(), k, v)) end
+    for k, p in pairs(prev) do
+        if cur[k] == nil then DiagEcho(string.format("%.0f秒 - %s", Elapsed(), p.label)) end
     end
-    for k, v in pairs(old) do
-        if snap[k] == nil then DiagEcho(string.format("%.0f秒 - %s %s", Elapsed(), k, v)) end
-    end
-    State.diagSnap = snap
+    State.diagSnap = cur
     -- 暫停期間收到的聊天訊息（OnChatMessage 只收集）
     while State.diagChatShown < #State.gambleChat do
         State.diagChatShown = State.diagChatShown + 1
@@ -2474,7 +2555,7 @@ function Handlers.DUNGEON_GAMBLE()
     if not State.gamblePauseLogged then
         Api.NavStop()   -- 寶物庫內自動輸出和閃避維持開著，只停止移動
         Log("強欲陷阱出現，腳本暫停：請自己操作（挑戰／不挑戰、選大／小）。強欲陷阱結束後自動繼續，或輸入 /echo #繼續")
-        if Cfg.GambleDiag then Log("強欲陷阱診斷開始：每 " .. GAMBLE_DIAG_INTERVAL .. " 秒印出視窗、物件、聊天的變化（[G14][強欲] 開頭）") end
+        if Cfg.GambleDiag then Log("強欲陷阱診斷開始（同 GambleTest v0.5）：每 " .. GAMBLE_DIAG_INTERVAL .. " 秒讀寶箱周圍物件的記憶體，印出變化（[G14][強欲] 開頭）；請記下每一輪卡牌的數字") end
         State.gamblePauseLogged = true
     end
     GambleDiagTick()
@@ -2605,7 +2686,7 @@ end
 -- 到了下一層沒：不看位移，看有沒有下一層的寶箱或怪物（傳送後會有一段不能移動的過場動畫，
 -- 之後的 DUNGEON_CHEST / DUNGEON_PULL 都會等動畫結束才動）：
 --   * 寶箱：可互動，而且離這一層互動過的寶箱（State.floorChestPos）超過 FLOOR_CHEST_APART → DUNGEON_CHEST（第 1～4 層）
---   * 怪物（只在第 4 層 → 第 5 層時看）：第 5 層一進去就是怪、沒有寶箱 → DUNGEON_PULL
+--   （第 4 層 → 第 5 層不在這裡判斷：第 5 層沒有寶箱，由 DUNGEON_PASSAGE 等進入下一層的動畫結束才算到）
 -- 有就把層數 +1、清掉門的資料，回傳下一個步驟；都沒有回傳 nil
 local FLOOR_CHEST_APART = 20
 
@@ -2615,9 +2696,6 @@ local function NextFloorStep()
     if chest ~= nil and (State.floorChestPos == nil
         or Distance2D(chest.Position, State.floorChestPos) > FLOOR_CHEST_APART) then
         nextStep, how = "DUNGEON_CHEST", "看到寶箱"
-    elseif State.stage == MAX_STAGES - 1 and FindVaultEnemy() ~= nil then
-        -- 只有第 4 層 → 第 5 層才用怪物判斷（第 5 層沒有寶箱、直接打怪）；其他層看寶箱，避免看到別層的怪就提早判定
-        nextStep, how = "DUNGEON_PULL", "看到怪物"
     end
     if nextStep == nil then return nil end
     State.stage = State.stage + 1
@@ -2649,9 +2727,36 @@ function Handlers.DUNGEON_PASSAGE()
         Log("選錯門，被移出寶物庫")
         return "DUNGEON_EXIT"
     end
+    -- 第 4 層 → 第 5 層：第 5 層沒有寶箱、一進去就是怪，而第 5 層的怪在第 4 層就可能看得到（看到就去找會卡尋路）。
+    -- 所以不看怪物：等走進門後「進入下一層的動畫」出現並結束（同入口的狀態旗標），才算進了第 5 層，之後才找怪
+    if State.stage == MAX_STAGES - 1 then
+        if #EntryLockFlags() > 0 then
+            if not State.passAnim then
+                Api.NavStop()
+                Log("進入下一層的動畫，等動畫結束")
+                State.passAnim = true
+            end
+            State.passAnimEnd = nil
+            return nil
+        end
+        if State.passAnim then
+            if not Api.PlayerReady() then
+                State.passAnimEnd = nil
+                return nil
+            end
+            State.passAnimEnd = State.passAnimEnd or Elapsed()
+            if Elapsed() - State.passAnimEnd < FLOOR_SETTLE then return nil end
+            State.stage = State.stage + 1
+            State.doorPos, State.doorObj, State.doorFrom = nil, nil, nil
+            Log("到達第 " .. State.stage .. " 層（動畫結束），去找怪物")
+            return "DUNGEON_PULL"
+        end
+    end
     if Busy() then return nil end
-    local nextStep = NextFloorStep()
-    if nextStep ~= nil then return nextStep end
+    if State.stage ~= MAX_STAGES - 1 then
+        local nextStep = NextFloorStep()
+        if nextStep ~= nil then return nextStep end
+    end
 
     -- 踩上法陣後有一段不能操作的動畫：動畫中不要再下移動指令（不然每次都會再往前 4，越走越遠）
     if not Api.NavRunning() and Api.PlayerReady() and not Api.Condition(Cond.occupiedInEvent) then
@@ -2785,12 +2890,14 @@ local function Transition(next)
     State.entryMovePos, State.entryMoveAt = nil, nil
     State.chestMovePos, State.chestMoveAt, State.chestStalls = nil, nil, 0
     State.passLastPos, State.passTries = nil, 0
+    State.passAnim, State.passAnimEnd = false, nil
     if next == "DUNGEON_CHEST" then State.doorHint, State.gambleActive = nil, false end
     if next == "DUNGEON_GAMBLE" then
         State.resumeRequested, State.gambleSeen, State.gambleGoneAt = false, false, nil
         State.gamblePauseLogged, State.gambleNameHinted = false, false
         State.gambleDiagOn, State.gambleChat, State.diagChatShown = true, {}, 0
         State.diagAt, State.diagSnap, State.diagSeen = nil, {}, {}
+        State.diagWin, State.diagMemNoted = nil, false
     end
     State.spotLogged = nil
     State.searchTries, State.lastSearch, State.manualPrompted = 0, nil, false

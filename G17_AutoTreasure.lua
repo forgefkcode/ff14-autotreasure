@@ -691,9 +691,51 @@ function Api.WrathOff(force)
         if aiCmd ~= nil then yield(aiCmd) end
         State.vbmAiOn = false
     end
+    State.aiSuspended = false
     State.wrathOn = false
 end
 
+
+-- 寶物庫（室內、各層上下疊在一起）的移動目的地：以 (x, y, z) 的高度找附近最近的可走點。
+-- 不用 PointOnFloor：它從高度 1024 往下找地面，室內會先碰到上一層的地板或屋頂，目的地落在走不到的地方
+function Api.NearestMeshPoint(x, y, z)
+    local ok, p = pcall(function() return IPC.vnavmesh.NearestPoint(Vector3(x, y, z), 3, 6) end)
+    if ok and p ~= nil then return p end
+    return nil
+end
+
+function Api.VaultMoveTo(x, y, z)
+    Api.NavMoveTo(Api.NearestMeshPoint(x, y, z) or Vector3(x, y, z), false)
+end
+
+-- 直線走到 pos，不做路徑規劃（vnavmesh 把目的地當成走不到時用）。List<Vector3> 的泛型參數要寫組件名稱（NLua 1.7.9 實測）
+function Api.MoveStraight(pos)
+    return pcall(function()
+        local ListType = luanet.import_type("System.Collections.Generic.List`1[[System.Numerics.Vector3, System.Numerics.Vectors]]")
+            or luanet.import_type("System.Collections.Generic.List`1[[System.Numerics.Vector3, System.Private.CoreLib]]")
+        local list = ListType()
+        list:Add(Vector3(pos.X, pos.Y, pos.Z))
+        IPC.vnavmesh.MoveTo(list, false)
+    end)
+end
+
+-- 暫時關掉閃避 AI（走路時被 AI 拉住用）；進入戰鬥時 CombatTick 呼叫 Api.ResumeAi 打開
+function Api.SuspendAi()
+    if not State.vbmAiOn then return end
+    local aiCmd = BossAiCmd(false)
+    if aiCmd ~= nil then yield(aiCmd) end
+    State.vbmAiOn, State.aiSuspended = false, true
+end
+
+function Api.ResumeAi()
+    if not State.aiSuspended then return end
+    State.aiSuspended = false
+    local aiCmd = BossAiCmd(true)
+    if aiCmd ~= nil and Api.Territory() == VAULT_TERRITORY then
+        yield(aiCmd)
+        State.vbmAiOn = true
+    end
+end
 
 -- 遊戲清單元件各列的文字，依畫面由上到下：第 0 列在節點 51001、第 1 列 51002…，最後一列在節點 5。
 -- 社群腳本的順序（5 → 51001 → 51002）會整個錯開一格：實測點 G12 開到 G15、G15 開到 G17、G17 開到 G12
@@ -1393,6 +1435,7 @@ local function CombatTick()
     if t ~= nil and (t.Name == Cfg.ChestName or t.Name == Cfg.DungeonChestName) then
         Api.ClearTarget()
     end
+    Api.ResumeAi()   -- 走路時暫時關掉的閃避 AI，進入戰鬥就打開
     -- 不主動選目標：選目標全部交給 RSR / Wrath（腳本先鎖定會跟 RSR 衝突）
     if not State.wrathOn then
         Api.NavStop()
@@ -1424,7 +1467,7 @@ local function PullWithTomahawk(enemy)
     local dist = Distance2D(Api.PlayerPos(), enemy.Position)
     if dist > TOMAHAWK_RANGE then
         if not Api.NavRunning() then
-            Api.NavMoveTo(Api.PointOnFloor(enemy.Position.X, enemy.Position.Z) or enemy.Position, false)
+            Api.VaultMoveTo(enemy.Position.X, enemy.Position.Y, enemy.Position.Z)
         end
         return false
     end
@@ -2075,7 +2118,7 @@ function Handlers.DUNGEON_PASSAGE()
         local len = math.max(math.sqrt(dx * dx + dz * dz), 0.01)
         local dist = Cfg.PassageDistance + (State.passTries - 1) * 4
         local x, z = d.X + dx / len * dist, d.Z + dz / len * dist
-        local target = Api.PointOnFloor(x, z) or Vector3(x, d.Y, z)
+        local target = Api.NearestMeshPoint(x, d.Y, z) or Vector3(x, d.Y, z)
         if State.passTries == 1 then Log("走進門，前往傳送法陣") end
         Api.NavMoveTo(target, false)
     end

@@ -714,9 +714,51 @@ function Api.WrathOff(force)
         if aiCmd ~= nil then yield(aiCmd) end
         State.vbmAiOn = false
     end
+    State.aiSuspended = false
     State.wrathOn = false
 end
 
+
+-- 寶物庫（室內、各層上下疊在一起）的移動目的地：以 (x, y, z) 的高度找附近最近的可走點。
+-- 不用 PointOnFloor：它從高度 1024 往下找地面，室內會先碰到上一層的地板或屋頂，目的地落在走不到的地方
+function Api.NearestMeshPoint(x, y, z)
+    local ok, p = pcall(function() return IPC.vnavmesh.NearestPoint(Vector3(x, y, z), 3, 6) end)
+    if ok and p ~= nil then return p end
+    return nil
+end
+
+function Api.VaultMoveTo(x, y, z)
+    Api.NavMoveTo(Api.NearestMeshPoint(x, y, z) or Vector3(x, y, z), false)
+end
+
+-- 直線走到 pos，不做路徑規劃（vnavmesh 把目的地當成走不到時用）。List<Vector3> 的泛型參數要寫組件名稱（NLua 1.7.9 實測）
+function Api.MoveStraight(pos)
+    return pcall(function()
+        local ListType = luanet.import_type("System.Collections.Generic.List`1[[System.Numerics.Vector3, System.Numerics.Vectors]]")
+            or luanet.import_type("System.Collections.Generic.List`1[[System.Numerics.Vector3, System.Private.CoreLib]]")
+        local list = ListType()
+        list:Add(Vector3(pos.X, pos.Y, pos.Z))
+        IPC.vnavmesh.MoveTo(list, false)
+    end)
+end
+
+-- 暫時關掉閃避 AI（走路時被 AI 拉住用）；進入戰鬥時 CombatTick 呼叫 Api.ResumeAi 打開
+function Api.SuspendAi()
+    if not State.vbmAiOn then return end
+    local aiCmd = BossAiCmd(false)
+    if aiCmd ~= nil then yield(aiCmd) end
+    State.vbmAiOn, State.aiSuspended = false, true
+end
+
+function Api.ResumeAi()
+    if not State.aiSuspended then return end
+    State.aiSuspended = false
+    local aiCmd = BossAiCmd(true)
+    if aiCmd ~= nil and VAULT_TERRITORIES[Api.Territory()] then
+        yield(aiCmd)
+        State.vbmAiOn = true
+    end
+end
 
 -- 遊戲清單元件各列的文字，依畫面由上到下：第 0 列在節點 51001、第 1 列 51002…，最後一列在節點 5。
 -- 社群腳本的順序（5 → 51001 → 51002）會整個錯開一格：實測點 G12 開到 G15、G15 開到 G17、G17 開到 G12
@@ -1452,6 +1494,7 @@ local function CombatTick()
     if t ~= nil and (t.Name == Cfg.ChestName or t.Name == Cfg.DungeonChestName) then
         Api.ClearTarget()
     end
+    Api.ResumeAi()   -- 走路時暫時關掉的閃避 AI，進入戰鬥就打開
     -- 不主動選目標：選目標全部交給 RSR / Wrath（腳本先鎖定會跟 RSR 衝突）
     if not State.wrathOn then
         Api.NavStop()
@@ -1483,7 +1526,7 @@ local function PullWithTomahawk(enemy)
     local dist = Distance2D(Api.PlayerPos(), enemy.Position)
     if dist > TOMAHAWK_RANGE then
         if not Api.NavRunning() then
-            Api.NavMoveTo(Api.PointOnFloor(enemy.Position.X, enemy.Position.Z) or enemy.Position, false)
+            Api.VaultMoveTo(enemy.Position.X, enemy.Position.Y, enemy.Position.Z)
         end
         return false
     end
@@ -1973,6 +2016,8 @@ local CHEST_SETTLE         = 3    -- 寶箱不能互動後至少再等幾秒才�
 local CHEST_INTERACT_TRIES = 3
 local CHEST_INTERACT_RANGE = 2    -- 離寶箱中心多近才互動（原本 3 碼、/vnav movetarget 會停在互動距離外）
 local CHEST_STALL          = 3    -- 走向寶箱時幾秒沒前進（被寶箱擋住）就直接互動
+local CHEST_INTERACT_FAR   = 5    -- 卡住時離寶箱還超過這個距離：不互動（隔空互動不到），改用別的方法走近
+local CHEST_STALLS_MAX     = 4
 
 -- 名稱相符的物件裡最近的一個（不管能不能互動），回傳物件和平面距離。
 -- 寶箱離入口有一段距離、還不能互動時（Api.GetEntity 只找可互動的），用它的位置先走過去
@@ -2011,7 +2056,7 @@ local function SearchForward(label)
     if State.forwardDist > FORWARD_MAX then return false end
     local x, z = from.X + dir[1] * State.forwardDist, from.Z + dir[2] * State.forwardDist
     Log("看不到" .. label .. "，往前走 " .. State.forwardDist .. " 碼找")
-    Api.NavMoveTo(Api.PointOnFloor(x, z) or Vector3(x, from.Y, z), false)
+    Api.VaultMoveTo(x, from.Y, z)
     return true
 end
 
@@ -2023,9 +2068,29 @@ local function ApproachChest(chest)
     end
     if dist > CHEST_INTERACT_RANGE and Elapsed() - State.chestMoveAt < CHEST_STALL then
         if not Api.NavRunning() then
-            -- 重下導航指令不重設「沒前進」的計時：vnavmesh 一直停在同一點時，CHEST_STALL 秒後就直接互動
-            Api.NavMoveTo(Api.PointOnFloor(pos.X, pos.Z) or pos, false)
+            -- 重下導航指令不重設「沒前進」的計時：vnavmesh 一直停在同一點時，CHEST_STALL 秒後就換方法或互動
+            Api.VaultMoveTo(pos.X, pos.Y, pos.Z)
         end
+        return false
+    end
+    if dist > CHEST_INTERACT_FAR then
+        -- 卡住了而且還很遠：依序換方法走近（直線走 → 暫時關閃避 AI → 從其他方向靠近），不隔空互動
+        State.chestStalls = (State.chestStalls or 0) + 1
+        local nav = Api.NavRunning() and "導航中" or "導航已停"
+        Api.NavStop()
+        if State.chestStalls == 1 then
+            Log(string.format("走向寶箱卡在 %.1f 外（%s），改成直線走過去", dist, nav))
+            Api.MoveStraight(pos)
+        elseif State.chestStalls == 2 and State.vbmAiOn then
+            Log(string.format("走向寶箱還是卡在 %.1f 外（%s），暫時關閉閃避 AI 再走（進入戰鬥時會打開）", dist, nav))
+            Api.SuspendAi()
+            Api.VaultMoveTo(pos.X, pos.Y, pos.Z)
+        elseif State.chestStalls <= CHEST_STALLS_MAX then
+            local a = State.chestStalls * math.pi / 2
+            Log(string.format("走向寶箱卡在 %.1f 外（%s），改從寶箱的另一側靠近", dist, nav))
+            Api.VaultMoveTo(pos.X + math.sin(a) * 3, pos.Y, pos.Z + math.cos(a) * 3)
+        end
+        State.chestMovePos, State.chestMoveAt = me, Elapsed()
         return false
     end
     Api.NavStop()
@@ -2077,7 +2142,7 @@ function Handlers.DUNGEON_CHEST()
                     State.chestLogged = true
                 end
                 if not Api.NavRunning() then
-                    Api.NavMoveTo(Api.PointOnFloor(far.Position.X, far.Position.Z) or far.Position, false)
+                    Api.VaultMoveTo(far.Position.X, far.Position.Y, far.Position.Z)
                 end
                 if TimedOut("DUNGEON_CHEST") then return "ERROR" end
                 return nil
@@ -2092,6 +2157,10 @@ function Handlers.DUNGEON_CHEST()
         if not State.chestLogged then
             Log(string.format("寶箱在 %.0f 外，走過去", Distance2D(Api.PlayerPos(), chest.Position)))
             State.chestLogged = true
+        end
+        if (State.chestStalls or 0) > CHEST_STALLS_MAX then
+            LogError("走不到寶箱旁（換了 " .. CHEST_STALLS_MAX .. " 種方法都卡住）")
+            return "ERROR"
         end
         if not Api.Condition(Cond.occupiedInEvent) and ApproachChest(chest) then
             -- 記下這一層寶箱的位置：走進門時用來分辨「看到的是下一層的寶箱」（不在 Transition 重置）
@@ -2435,7 +2504,7 @@ local function ApproachDoors()
         Log(string.format("門還不能互動，先走到%s（%.0f 外）", how, Distance2D(me, target)))
         State.doorApproachLog = how
     end
-    Api.NavMoveTo(Api.PointOnFloor(target.X, target.Z) or Vector3(target.X, target.Y, target.Z), false)
+    Api.VaultMoveTo(target.X, target.Y, target.Z)
 end
 
 -- 選門：場上可互動的「寶物庫的門」。有發光提示時只會剩一扇，選那扇（提示後最多再等 5 秒讓另一扇消失）；
@@ -2541,7 +2610,7 @@ function Handlers.DUNGEON_PASSAGE()
         local len = math.max(math.sqrt(dx * dx + dz * dz), 0.01)
         local dist = Cfg.PassageDistance + (State.passTries - 1) * 4
         local x, z = d.X + dx / len * dist, d.Z + dz / len * dist
-        local target = Api.PointOnFloor(x, z) or Vector3(x, d.Y, z)
+        local target = Api.NearestMeshPoint(x, d.Y, z) or Vector3(x, d.Y, z)
         if State.passTries == 1 then Log("走進門，前往傳送法陣") end
         Api.NavMoveTo(target, false)
     end
@@ -2802,7 +2871,7 @@ local function Transition(next)
     State.pullAttempt, State.attemptStart = nil, nil
     State.doorMidReached, State.doorSearchDist, State.doorApproachLog = false, nil, nil
     State.forwardDist = nil
-    State.chestMovePos, State.chestMoveAt = nil, nil
+    State.chestMovePos, State.chestMoveAt, State.chestStalls = nil, nil, 0
     State.passLastPos, State.passTries = nil, 0
     if next == "DUNGEON_CHEST" then State.doorHint, State.gambleActive = nil, false end
     if next == "DUNGEON_GAMBLE" then

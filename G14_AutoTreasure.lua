@@ -1489,7 +1489,7 @@ end
 -- 敵人比 TOMAHAWK_RANGE 遠就先走近。用遊戲原生的 /ac 技能名（名稱從遊戲資料取），不經過 SND 的列舉參數。
 -- 打中（進入戰鬥）、丟滿 TOMAHAWK_TRIES 次、或試了 TOMAHAWK_GIVE_UP 秒，就回傳 true（開怪結束）
 local TOMAHAWK_ACTION_ID = 46   -- 飛斧（Action 表，取自 XIVAPI）
-local TOMAHAWK_RANGE     = 18   -- 射程 20，留一點餘裕
+local TOMAHAWK_RANGE     = 5    -- G14：先走到怪物旁再選取、丟飛斧（使用者指定；飛斧射程 20）
 local TOMAHAWK_TRIES     = 3
 local TOMAHAWK_GIVE_UP   = 15
 local TOMAHAWK_NAME      = nil
@@ -2353,7 +2353,23 @@ function Handlers.DUNGEON_LOOT()
         return nil
     end
 
-    -- 寶物庫的寶箱打完怪會自動打開，不用互動：最多等 VAULT_CHEST_WAIT 秒讓它打開（變成不能互動），之後就算還能互動也不管
+    -- 第 5 層（最終區）：先打完怪，寶箱要自己走過去開（不會自動打開）。開了之後可能出現強欲陷阱（上面會處理）
+    if State.stage >= MAX_STAGES then
+        local chest = Api.GetEntity(Cfg.DungeonChestName)
+        if chest ~= nil then
+            if not Api.Condition(Cond.occupiedInEvent) and Elapsed() - (State.finalChestAt or -10) > CHEST_REACT_WAIT then
+                if ApproachChest(chest) then
+                    State.finalChestAt = Elapsed()
+                    Log("第 5 層：打完怪，開寶箱")
+                end
+            end
+            State.lastChestAt = Elapsed()
+            if TimedOut("DUNGEON_LOOT") then return "ERROR" end
+            return nil
+        end
+    end
+
+    -- 第 1～4 層的寶箱打完怪會自動打開，不用互動：最多等 VAULT_CHEST_WAIT 秒讓它打開（變成不能互動），之後就算還能互動也不管
     if Api.GetEntity(Cfg.DungeonChestName) ~= nil and Elapsed() < VAULT_CHEST_WAIT then
         State.lastChestAt = Elapsed()
         return nil
@@ -2863,8 +2879,8 @@ function Handlers.DUNGEON_PASSAGE()
         Log("選錯門，被移出寶物庫")
         return "DUNGEON_EXIT"
     end
-    -- 第 4 層 → 第 5 層：第 5 層沒有寶箱、一進去就是怪，而第 5 層的怪在第 4 層就可能看得到（看到就去找會卡尋路）。
-    -- 所以不看怪物：等走進門後「進入下一層的動畫」出現並結束（同入口的狀態旗標），才算進了第 5 層，之後才找怪
+    -- 第 4 層 → 第 5 層：第 5 層一進去就是怪（打完才開寶箱），而且沒有過場動畫。
+    -- 走進門時（門已確認打開）看得到怪物就算進了第 5 層；萬一有動畫，就等動畫結束
     if State.stage == MAX_STAGES - 1 then
         if #EntryLockFlags() > 0 then
             if not State.passAnim then
@@ -2885,6 +2901,15 @@ function Handlers.DUNGEON_PASSAGE()
             State.stage = State.stage + 1
             State.doorPos, State.doorObj, State.doorFrom = nil, nil, nil
             Log("到達第 " .. State.stage .. " 層（動畫結束），去找怪物")
+            return "DUNGEON_PULL"
+        end
+        -- 第 5 層（最終區）沒有過場動畫：門已經在 DUNGEON_DOOR_WAIT 確認打開，看得到怪物就算到了，
+        -- 去找怪的路徑會穿過打開的門（門還沒開時不看怪物，不然會隔著牆尋路卡住）
+        if FindVaultEnemy() ~= nil then
+            State.stage = State.stage + 1
+            State.doorPos, State.doorObj, State.doorFrom = nil, nil, nil
+            Api.NavStop()
+            Log("到達第 " .. State.stage .. " 層（門已打開、看到怪物），去找怪物")
             return "DUNGEON_PULL"
         end
     end
@@ -3024,7 +3049,7 @@ local function Transition(next)
     State.forwardDist = nil
     State.entryStart, State.entryCutscene, State.entryEndAt, State.entryWaitLogged = nil, false, nil, false
     State.entryMovePos, State.entryMoveAt = nil, nil
-    State.chestMovePos, State.chestMoveAt, State.chestStalls = nil, nil, 0
+    State.chestMovePos, State.chestMoveAt, State.chestStalls, State.finalChestAt = nil, nil, 0, nil
     State.passLastPos, State.passTries = nil, 0
     State.passAnim, State.passAnimEnd = false, nil
     if next == "DUNGEON_CHEST" then State.doorHint, State.gambleActive = nil, false end

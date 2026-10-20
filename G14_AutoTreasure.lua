@@ -1071,6 +1071,8 @@ function OnChatMessage()
     if State.gambleDiagOn and #State.gambleChat < 60 then table.insert(State.gambleChat, msg) end
     if msg:find("將陷阱引來的魔物全部打倒了", 1, true) then
         State.fieldCleared = true
+    elseif msg:find("打開了", 1, true) and msg:find("大門", 1, true) then
+        State.doorOpened = true   -- 「打開了通往第二區的大門！」：選的門有反應
     elseif msg:find("右側的門發光了", 1, true) then
         State.doorHint = "右側"
     elseif msg:find("左側的門發光了", 1, true) then
@@ -1947,6 +1949,7 @@ function Handlers.DUNGEON_INIT()
     State.floorChestPos = nil
     -- 上一趟寶物庫可能在選完門、還沒到下一層前就結束（報錯、被移出），選門記錄會留著：新的寶物庫一定要清掉
     State.doorPos, State.doorObj, State.doorFrom, State.doorHint = nil, nil, nil, nil
+    State.doorTries, State.doorOpened, State.doorMoveAt = 0, false, nil
     State.passAnim, State.passAnimEnd = false, nil
     -- 進寶物庫就開自動輸出和閃避，一直開到離開寶物庫（寶物庫內一般的關閉呼叫都會跳過，見 Api.WrathOff）
     Api.WrathOn()
@@ -2694,6 +2697,29 @@ local function ApproachDoors()
     Api.VaultMoveTo(target.X, target.Y, target.Z)
 end
 
+-- 互動門沒反應時的重試：直接走到門的最近可走點，DOOR_INTERACT_RANGE 以內、或 DOOR_STALL 秒沒前進（被門擋住）才互動
+local DOOR_INTERACT_RANGE = 2.5
+local DOOR_STALL          = 2
+local DOOR_TRIES          = 3
+
+local function ApproachDoorCloser()
+    local me, pos = Api.PlayerPos(), State.doorPos
+    local dist = Distance2D(me, pos)
+    if State.doorMoveAt == nil or Distance2D(me, State.doorMovePos) > 0.3 then
+        State.doorMovePos, State.doorMoveAt = me, Elapsed()
+    end
+    if dist > DOOR_INTERACT_RANGE and Elapsed() - State.doorMoveAt < DOOR_STALL then
+        if not Api.NavRunning() then Api.VaultMoveTo(pos.X, pos.Y, pos.Z) end
+        return false
+    end
+    Api.NavStop()
+    if Api.Condition(Cond.occupiedInEvent) then return false end
+    if not pcall(function() Svc.Targets.Target = State.doorObj end) then return false end
+    Log(string.format("走近門（距離 %.1f），再互動一次（第 %d 次）", dist, State.doorTries + 1))
+    Api.InteractTarget()
+    return true
+end
+
 -- 選門：場上可互動的「寶物庫的門」。有發光提示時只會剩一扇，選那扇（提示後最多再等 5 秒讓另一扇消失）；
 -- 沒有提示就先等 DoorHintWait 秒，之後依 DoorChoice 選（Random 隨機 / First 第一個）
 function Handlers.DUNGEON_DOOR()
@@ -2749,6 +2775,7 @@ function Handlers.DUNGEON_DOOR()
             Log("第 " .. State.stage .. " 層選門：沒有提示，" .. (Cfg.DoorChoice == "Random" and "隨機" or "第一個") .. "（" .. idx .. "/" .. #doors .. "）")
         end
         -- 記下門和選門前站的位置（門開了之後物件可能消失，之後只用座標）
+        State.doorTries = 0
         State.doorObj = door
         State.doorPos = Vector3(door.Position.X, door.Position.Y, door.Position.Z)
         -- 走進門的方向用「這層寶箱 → 門」（寶箱在房間中間；角色可能已經走到門邊，用站的位置算方向會偏）
@@ -2756,7 +2783,14 @@ function Handlers.DUNGEON_DOOR()
         State.doorFrom = State.floorChestPos and { X = State.floorChestPos.X, Y = me.Y, Z = State.floorChestPos.Z } or me
     end
 
-    if not Api.Condition(Cond.occupiedInEvent) and ApproachAndInteractObject(State.doorObj) then
+    -- 互動前清掉「門有反應」的證據，DUNGEON_DOOR_WAIT 用來確認這次互動真的有效
+    if (State.doorTries or 0) == 0 then
+        if not Api.Condition(Cond.occupiedInEvent) and ApproachAndInteractObject(State.doorObj) then
+            State.doorOpened, State.doorTries = false, 1
+            return "DUNGEON_DOOR_WAIT"
+        end
+    elseif ApproachDoorCloser() then
+        State.doorOpened, State.doorTries = false, State.doorTries + 1
         return "DUNGEON_DOOR_WAIT"
     end
     if TimedOut("DUNGEON_DOOR") then
@@ -2799,7 +2833,25 @@ function Handlers.DUNGEON_DOOR_WAIT()
     local nextStep = NextFloorStep()   -- 開門動畫中就被傳到下一層
     if nextStep ~= nil then return nextStep end
     if Api.ConfirmYes() then return nil end
+    -- 門有反應的證據：聊天「打開了…大門」、等待中出現動畫旗標、選的門變成不能互動
+    if #EntryLockFlags() > 0 then State.doorOpened = true end
+    if not State.doorOpened then
+        local stillTargetable = false
+        for _, d in ipairs(Api.TargetableObjects(Cfg.DoorName)) do
+            if Distance2D(d.Position, State.doorPos) <= 3 then stillTargetable = true end
+        end
+        if not stillTargetable then State.doorOpened = true end
+    end
     if Elapsed() < Cfg.DoorAnimWait or Api.Condition(Cond.occupiedInEvent) or not Api.PlayerReady() then return nil end
+    if not State.doorOpened then
+        if (State.doorTries or 0) >= DOOR_TRIES then
+            LogError("互動門 " .. DOOR_TRIES .. " 次都沒有反應（沒有開門訊息、門也還能互動）")
+            return "ERROR"
+        end
+        Log("門沒有反應（互動沒成功），走近一點再互動")
+        State.doorMoveAt = nil
+        return "DUNGEON_DOOR"
+    end
     return "DUNGEON_PASSAGE"
 end
 

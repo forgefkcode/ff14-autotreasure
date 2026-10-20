@@ -1950,7 +1950,7 @@ function Handlers.DUNGEON_INIT()
     -- 上一趟寶物庫可能在選完門、還沒到下一層前就結束（報錯、被移出），選門記錄會留著：新的寶物庫一定要清掉
     State.doorPos, State.doorObj, State.doorFrom, State.doorHint = nil, nil, nil, nil
     State.doorTries, State.doorOpened, State.doorMoveAt = 0, false, nil
-    State.passAnim, State.passAnimEnd = false, nil
+    State.passAnim, State.passAnimEnd, State.passAnimAt, State.passMovePos, State.passMoveAt = false, nil, nil, nil, nil
     -- 進寶物庫就開自動輸出和閃避，一直開到離開寶物庫（寶物庫內一般的關閉呼叫都會跳過，見 Api.WrathOff）
     Api.WrathOn()
     Log("進入寶物庫，開啟自動輸出與閃避")
@@ -2871,6 +2871,9 @@ function Handlers.DUNGEON_DOOR_WAIT()
     return "DUNGEON_PASSAGE"
 end
 
+local PASS_STALL    = 2   -- 第 4 層走進門時，導航在跑、角色幾秒沒移動就算進入動畫
+local PASS_ANIM_MIN = 3   -- 進入動畫後至少等幾秒才判斷動畫結束
+
 -- 走進門：門後有傳送法陣（不能互動、沒有名稱），踩上去會被傳到下一層。
 -- 從選門前站的位置往門的方向，穿過門再往前 PassageDistance（每次沒傳送成功就再往前 4）。
 -- 看到下一層的寶箱或怪物（NextFloorStep）就算到了；DUNGEON_PASSAGE 秒內都沒看到才報錯
@@ -2879,20 +2882,26 @@ function Handlers.DUNGEON_PASSAGE()
         Log("選錯門，被移出寶物庫")
         return "DUNGEON_EXIT"
     end
-    -- 第 4 層 → 第 5 層：第 5 層一進去就是怪（打完才開寶箱），而且沒有過場動畫。
-    -- 走進門時（門已確認打開）看得到怪物就算進了第 5 層；萬一有動畫，就等動畫結束
+    -- 第 4 層 → 第 5 層（使用者指定）：先走進門 → 等過場動畫結束 → 才去找怪（DUNGEON_PULL）。
+    -- 動畫開始：狀態旗標亮起，或導航還在跑、角色卻 PASS_STALL 秒沒移動（被動畫鎖住；這段動畫可能不亮任何旗標，同入口的判斷）
+    -- 動畫結束：至少過了 PASS_ANIM_MIN 秒，旗標都沒亮、角色可以操作，維持 FLOOR_SETTLE 秒
     if State.stage == MAX_STAGES - 1 then
-        if #EntryLockFlags() > 0 then
-            if not State.passAnim then
-                Api.NavStop()
-                Log("進入下一層的動畫，等動畫結束")
-                State.passAnim = true
+        local flags = EntryLockFlags()
+        if not State.passAnim then
+            local me = Api.PlayerPos()
+            if State.passMovePos == nil or Distance2D(me, State.passMovePos) > 0.3 or not Api.NavRunning() then
+                State.passMovePos, State.passMoveAt = me, Elapsed()
             end
-            State.passAnimEnd = nil
-            return nil
-        end
-        if State.passAnim then
-            if not Api.PlayerReady() then
+            local stalled = Api.NavRunning() and Elapsed() - State.passMoveAt >= PASS_STALL
+            if #flags > 0 or stalled then
+                Api.NavStop()
+                State.passAnim, State.passAnimAt, State.passAnimEnd = true, Elapsed(), nil
+                Log("進入下一層的動畫（" .. (#flags > 0 and ("狀態旗標 " .. table.concat(flags, ","))
+                    or ("角色 " .. PASS_STALL .. " 秒沒移動")) .. "），等動畫結束")
+                return nil
+            end
+        else
+            if #flags > 0 or not Api.PlayerReady() or Elapsed() - State.passAnimAt < PASS_ANIM_MIN then
                 State.passAnimEnd = nil
                 return nil
             end
@@ -2901,15 +2910,6 @@ function Handlers.DUNGEON_PASSAGE()
             State.stage = State.stage + 1
             State.doorPos, State.doorObj, State.doorFrom = nil, nil, nil
             Log("到達第 " .. State.stage .. " 層（動畫結束），去找怪物")
-            return "DUNGEON_PULL"
-        end
-        -- 第 5 層（最終區）沒有過場動畫：門已經在 DUNGEON_DOOR_WAIT 確認打開，看得到怪物就算到了，
-        -- 去找怪的路徑會穿過打開的門（門還沒開時不看怪物，不然會隔著牆尋路卡住）
-        if FindVaultEnemy() ~= nil then
-            State.stage = State.stage + 1
-            State.doorPos, State.doorObj, State.doorFrom = nil, nil, nil
-            Api.NavStop()
-            Log("到達第 " .. State.stage .. " 層（門已打開、看到怪物），去找怪物")
             return "DUNGEON_PULL"
         end
     end
@@ -3051,7 +3051,7 @@ local function Transition(next)
     State.entryMovePos, State.entryMoveAt = nil, nil
     State.chestMovePos, State.chestMoveAt, State.chestStalls, State.finalChestAt = nil, nil, 0, nil
     State.passLastPos, State.passTries = nil, 0
-    State.passAnim, State.passAnimEnd = false, nil
+    State.passAnim, State.passAnimEnd, State.passAnimAt, State.passMovePos, State.passMoveAt = false, nil, nil, nil, nil
     if next == "DUNGEON_CHEST" then State.doorHint, State.gambleActive = nil, false end
     if next == "DUNGEON_GAMBLE" then
         State.resumeRequested, State.gambleSeen, State.gambleGoneAt = false, false, nil

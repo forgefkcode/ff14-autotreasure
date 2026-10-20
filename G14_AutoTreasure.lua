@@ -1515,8 +1515,11 @@ local function PullWithTomahawk(enemy)
             State.pullMovePos, State.pullMoveAt = me, Elapsed()
         end
         if Elapsed() - State.pullMoveAt >= PULL_STALL then
-            Log(string.format("走向「%s」卡在 %.0f 外（導航%s），改成直線走過去", State.pullLastName, dist,
-                Api.NavRunning() and "中" or "已停"))
+            if not State.pullStallLogged then
+                Log(string.format("走向「%s」卡在 %.0f 外（導航%s），改成直線走過去", State.pullLastName, dist,
+                    Api.NavRunning() and "中" or "已停"))
+                State.pullStallLogged = true
+            end
             Api.NavStop()
             Api.MoveStraight(enemy.Position)
             State.pullMoveAt = Elapsed()
@@ -2990,7 +2993,7 @@ function Handlers.DUNGEON_PULL()
     Log(string.format("沒有進入戰鬥（離「%s」%.0f 碼，導航%s），重新找怪（第 %d 次）", tostring(State.pullLastName),
         State.pullLastDist or -1, Api.NavRunning() and "中" or "已停", State.pullAttempt))
     State.attemptStart, State.pullStart, State.pullAt, State.pullTries = Elapsed(), nil, nil, 0
-    State.pullMovePos, State.pullMoveAt, State.pullApproachLogged = nil, nil, false
+    State.pullMovePos, State.pullMoveAt, State.pullApproachLogged, State.pullStallLogged = nil, nil, false, false
 end
 
 -- 離開寶物庫：還在寶物庫內就找離開用的傳送門（退出點）互動並確認；被移出或陣亡結束時直接等回到野外
@@ -3059,7 +3062,7 @@ local function Transition(next)
     State.cityTeleportSent = false
     State.combatTargeted, State.lastEnemyScan, State.lastInCombat, State.enemySeen = false, nil, nil, false
     State.pullStart, State.pullAt, State.pullTries = nil, nil, 0
-    State.pullMovePos, State.pullMoveAt, State.pullApproachLogged = nil, nil, false
+    State.pullMovePos, State.pullMoveAt, State.pullApproachLogged, State.pullStallLogged = nil, nil, false, false
     State.fought, State.pullExhausted, State.stageEndCheckAt = false, false, nil
     State.favTries = 0
     State.lastChestAt = nil

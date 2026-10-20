@@ -1491,7 +1491,8 @@ end
 local TOMAHAWK_ACTION_ID = 46   -- 飛斧（Action 表，取自 XIVAPI）
 local TOMAHAWK_RANGE     = 5    -- G14：先走到怪物旁再選取、丟飛斧（使用者指定；飛斧射程 20）
 local TOMAHAWK_TRIES     = 3
-local TOMAHAWK_GIVE_UP   = 15
+local TOMAHAWK_GIVE_UP   = 25   -- 含走到怪物旁的時間
+local PULL_STALL         = 3    -- 走向怪物時幾秒沒前進就改成直線走過去
 local TOMAHAWK_NAME      = nil
 
 local function PullWithTomahawk(enemy)
@@ -1501,9 +1502,25 @@ local function PullWithTomahawk(enemy)
         if Elapsed() - State.pullAt < 2.5 then return false end   -- 等技能放出去（GCD）
         if Api.Condition(Cond.inCombat) or State.pullTries >= TOMAHAWK_TRIES then return true end
     end
-    local dist = Distance2D(Api.PlayerPos(), enemy.Position)
+    local me = Api.PlayerPos()
+    local dist = Distance2D(me, enemy.Position)
+    State.pullLastDist, State.pullLastName = dist, tostring(enemy.Name.TextValue)
     if dist > TOMAHAWK_RANGE then
-        if not Api.NavRunning() then
+        -- 先走到怪物附近：導航走過去；PULL_STALL 秒沒前進（被擋住、路徑算不出來）就改成直線走過去
+        if not State.pullApproachLogged then
+            Log(string.format("走向「%s」（距離 %.0f）", State.pullLastName, dist))
+            State.pullApproachLogged = true
+        end
+        if State.pullMoveAt == nil or Distance2D(me, State.pullMovePos) > 0.3 then
+            State.pullMovePos, State.pullMoveAt = me, Elapsed()
+        end
+        if Elapsed() - State.pullMoveAt >= PULL_STALL then
+            Log(string.format("走向「%s」卡在 %.0f 外（導航%s），改成直線走過去", State.pullLastName, dist,
+                Api.NavRunning() and "中" or "已停"))
+            Api.NavStop()
+            Api.MoveStraight(enemy.Position)
+            State.pullMoveAt = Elapsed()
+        elseif not Api.NavRunning() then
             Api.VaultMoveTo(enemy.Position.X, enemy.Position.Y, enemy.Position.Z)
         end
         return false
@@ -2966,12 +2983,14 @@ function Handlers.DUNGEON_PULL()
     end
     if not failed then return nil end
     if State.pullAttempt >= PULL_ATTEMPTS then
-        LogError("找怪 " .. PULL_ATTEMPTS .. " 次都沒有進入戰鬥")
+        LogError(string.format("找怪 %d 次都沒有進入戰鬥（最後離「%s」%.0f 碼）", PULL_ATTEMPTS, tostring(State.pullLastName), State.pullLastDist or -1))
         return "ERROR"
     end
     State.pullAttempt = State.pullAttempt + 1
-    Log("沒有進入戰鬥，重新找怪（第 " .. State.pullAttempt .. " 次）")
+    Log(string.format("沒有進入戰鬥（離「%s」%.0f 碼，導航%s），重新找怪（第 %d 次）", tostring(State.pullLastName),
+        State.pullLastDist or -1, Api.NavRunning() and "中" or "已停", State.pullAttempt))
     State.attemptStart, State.pullStart, State.pullAt, State.pullTries = Elapsed(), nil, nil, 0
+    State.pullMovePos, State.pullMoveAt, State.pullApproachLogged = nil, nil, false
 end
 
 -- 離開寶物庫：還在寶物庫內就找離開用的傳送門（退出點）互動並確認；被移出或陣亡結束時直接等回到野外
@@ -3040,6 +3059,7 @@ local function Transition(next)
     State.cityTeleportSent = false
     State.combatTargeted, State.lastEnemyScan, State.lastInCombat, State.enemySeen = false, nil, nil, false
     State.pullStart, State.pullAt, State.pullTries = nil, nil, 0
+    State.pullMovePos, State.pullMoveAt, State.pullApproachLogged = nil, nil, false
     State.fought, State.pullExhausted, State.stageEndCheckAt = false, false, nil
     State.favTries = 0
     State.lastChestAt = nil

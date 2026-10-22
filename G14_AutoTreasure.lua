@@ -311,7 +311,6 @@ local STUCK_INTERVAL   = 10
 local STUCK_DISTANCE   = 1
 local MAX_STAGES       = 5
 local VAULT_CHEST_WAIT = 10   -- 寶物庫打完怪後最多等幾秒讓寶箱自動打開（寶物庫的寶箱不用互動）
-local LOOT_POKE_MAX    = 2    -- 等完還沒自動打開時，每層最多走過去互動幾次
 
 -------------------------------------------------------------------------------
 -- 2. Api 轉接層（SND v2 API；標 TODO 者為「待確認事項」，實測後修正）
@@ -2390,23 +2389,9 @@ function Handlers.DUNGEON_LOOT()
         end
     end
 
-    -- 第 1～4 層的寶箱打完怪會自動打開，不用互動：最多等 VAULT_CHEST_WAIT 秒讓它打開（變成不能互動）
-    local chest = Api.GetEntity(Cfg.DungeonChestName)
-    if chest ~= nil and Elapsed() < VAULT_CHEST_WAIT then
+    -- 第 1～4 層的寶箱打完怪會自動打開，不用互動：最多等 VAULT_CHEST_WAIT 秒讓它打開（變成不能互動），之後就算還能互動也不管
+    if Api.GetEntity(Cfg.DungeonChestName) ~= nil and Elapsed() < VAULT_CHEST_WAIT then
         State.lastChestAt = Elapsed()
-        return nil
-    end
-    -- 等完還沒打開：走過去互動（每層最多 LOOT_POKE_MAX 次，可能叫出強欲陷阱視窗，上面會處理），之後就算還能互動也不管
-    if State.lootPokeStage ~= State.stage then State.lootPokeStage, State.lootPokes = State.stage, 0 end
-    if chest ~= nil and State.lootPokes < LOOT_POKE_MAX then
-        if not Api.Condition(Cond.occupiedInEvent) and Elapsed() - (State.lootPokeAt or -10) > CHEST_REACT_WAIT then
-            if ApproachChest(chest) then
-                State.lootPokes, State.lootPokeAt = State.lootPokes + 1, Elapsed()
-                Log("寶箱打完怪 " .. VAULT_CHEST_WAIT .. " 秒都沒自動打開，走過去互動（第 " .. State.lootPokes .. " 次）")
-            end
-        end
-        State.lastChestAt = Elapsed()
-        if TimedOut("DUNGEON_LOOT") then return "ERROR" end
         return nil
     end
     if Api.Condition(Cond.occupiedInEvent) or Elapsed() - State.lastChestAt < 10 then return nil end
@@ -2606,46 +2591,16 @@ end
 -- 強欲陷阱暫停（GambleMode = Pause；舊設定值 Ignore 也算）：停止移動（自動輸出和閃避在寶物庫內維持開著），不互動、不計逾時，讓你自己選大／小或做測試。
 -- 繼續：強欲陷阱視窗或大／小魔法球出現過、之後都消失滿 5 秒；或在聊天框輸入 /echo #繼續。之後回到 DUNGEON_LOOT（開殘留寶箱 → 選門）
 -- G14：遇到強欲陷阱一律放棄（看不到卡牌數字，猜不了）＝按「不挑戰解除陷阱」直接開箱，不管 GambleMode。
--- 按法：先直接點視窗的按鈕 47「不挑戰解除陷阱」（SND 內建 ECommons 的 AddonMaster.TreasureHighLow.OpenChest()，
--- ECommons 和 AutoTreasureMaps 插件都是這樣按）；拿不到按鈕才用 /callback（參數取自 McVaxius 的插件，對方也標成未驗證）。
--- 每按一次等 GAMBLE_DECLINE_GAP 秒看視窗關了沒。視窗關了還要確認寶箱真的打開（寶箱變成不能互動）：
--- GAMBLE_OPEN_WAIT 秒內沒打開 = 這次按法沒效（視窗只是被關掉），走過去重新互動寶箱叫出視窗，換下一種按法。
--- 保險（改回暫停讓你手動處理）：按法都試完；大／小魔法球變成可互動（表示按成挑戰了）；只有聊天訊息、視窗 GAMBLE_WINDOW_WAIT 秒都沒出現
+-- callback 參數取自 McVaxius/LootGoblin（國際版插件實際觀察；繁中版尚未驗證）：不挑戰／收手 = TreasureHighLow true 1，
+-- 點「不挑戰」時遊戲送出的是 false -2 → true 1。依序試：true 1 → (false -2, true 1) → true 1，每次間隔 GAMBLE_DECLINE_GAP 秒。
+-- 保險（改回暫停讓你手動處理）：試完視窗還在；大／小魔法球變成可互動（表示按成挑戰了）；只有聊天訊息、視窗 GAMBLE_WINDOW_WAIT 秒都沒出現
 local GAMBLE_DECLINE_GAP  = 2
 local GAMBLE_WINDOW_WAIT  = 10
-local GAMBLE_OPEN_WAIT    = 8
-local GAMBLE_REOPEN_WAIT  = 30   -- 重新互動寶箱後最多等幾秒讓視窗再出現
 local GAMBLE_DECLINE_STEPS = {
-    "button",
-    "button",
     { "true 1" },
     { "false -2", "true 1" },
+    { "true 1" },
 }
-
--- 點強欲陷阱視窗的「不挑戰解除陷阱」按鈕。視窗位址要用 luanet.get_method_bysig 指定非泛型的 GetAddonByName(string, int)：
--- 直接寫 Svc.GameGui:GetAddonByName(...) 會碰到同名的泛型多載，NLua 1.7.9 丟出 pcall 攔不到的例外（本機實測），SND 會整支停掉。
--- 回傳 true 表示有點下去；拿不到 ECommons 的型別回傳 false（改用 callback）
-local GambleClicker = nil   -- { open = 型別, getAddon = 方法 }；false = 試過拿不到
-local function ClickGambleOpenChest()
-    if GambleClicker == nil then
-        GambleClicker = false
-        pcall(function()
-            luanet.load_assembly("ECommons")
-            local t = luanet.import_type("ECommons.UIHelpers.AddonMasterImplementations.AddonMaster+TreasureHighLow")
-            local f = luanet.get_method_bysig(Svc.GameGui, "GetAddonByName", "System.String", "System.Int32")
-            if t ~= nil and f ~= nil then GambleClicker = { open = t, getAddon = f } end
-        end)
-        if not GambleClicker then Log("拿不到 ECommons 的強欲陷阱視窗按鈕，改用 /callback") end
-    end
-    if not GambleClicker then return false end
-    local ok, err = pcall(function()
-        local addon = GambleClicker.getAddon(GAMBLE_WINDOW, 1)
-        if addon == nil or addon.IsNull or not addon.IsReady then error("視窗還沒準備好") end
-        GambleClicker.open(addon.Address):OpenChest()
-    end)
-    if not ok then Log("點「不挑戰解除陷阱」按鈕失敗：" .. tostring(err)) end
-    return ok
-end
 
 local GAMBLE_NAME_HINT = 15   -- 進入暫停幾秒後還看不到魔法球，就提示可能名稱不對
 
@@ -2660,24 +2615,14 @@ function Handlers.DUNGEON_GAMBLE()
             State.gambleManual = true
         elseif Api.AddonReady(GAMBLE_WINDOW) then
             Api.NavStop()
-            State.declineDoneAt, State.declineReopenAt = nil, nil
             if Elapsed() - (State.declineAt or -10) >= GAMBLE_DECLINE_GAP then
-                -- 下一種按法（拿不到按鈕就跳過 "button"）
-                local step
-                repeat
-                    State.declineTries = (State.declineTries or 0) + 1
-                    step = GAMBLE_DECLINE_STEPS[State.declineTries]
-                until step ~= "button" or ClickGambleOpenChest()
+                State.declineTries = (State.declineTries or 0) + 1
+                local step = GAMBLE_DECLINE_STEPS[State.declineTries]
                 if step == nil then
-                    LogError("「不挑戰解除陷阱」的按法都試過了，強欲陷阱還沒結束，改成暫停，請手動處理")
+                    LogError("按了 " .. #GAMBLE_DECLINE_STEPS .. " 次「不挑戰」，強欲陷阱視窗還在，改成暫停，請手動處理")
                     State.gambleManual = true
-                elseif step == "button" then
-                    State.declineWay = "點按鈕"
-                    Log("強欲陷阱：放棄，點「不挑戰解除陷阱」按鈕（第 " .. State.declineTries .. " 次）")
-                    State.declineAt = Elapsed()
                 else
-                    State.declineWay = "callback " .. table.concat(step, " → ")
-                    Log("強欲陷阱：放棄，送 " .. State.declineWay .. "（第 " .. State.declineTries .. " 次）")
+                    Log("強欲陷阱：放棄，按「不挑戰解除陷阱」（第 " .. State.declineTries .. " 次：" .. table.concat(step, " → ") .. "）")
                     for k, args in ipairs(step) do
                         if k > 1 then yield("/wait 0.3") end
                         yield("/callback " .. GAMBLE_WINDOW .. " " .. args)
@@ -2687,35 +2632,12 @@ function Handlers.DUNGEON_GAMBLE()
             end
             if not State.gambleManual then return nil end
         elseif (State.declineTries or 0) > 0 then
-            -- 視窗關了：寶箱真的打開（變成不能互動）才算放棄成功
+            -- 視窗關了：放棄成功，等寶箱打開再回去收尾、選門
             State.declineDoneAt = State.declineDoneAt or Elapsed()
-            local chest = Api.GetEntity(Cfg.DungeonChestName)
-            if chest == nil then
-                if Elapsed() - State.declineDoneAt < 3 then return nil end
-                State.gambleActive, State.gambleDiagOn = false, false
-                Log("已放棄強欲陷阱，寶箱打開了（" .. tostring(State.declineWay) .. " 有效），繼續")
-                return "DUNGEON_LOOT"
-            end
-            if Elapsed() - State.declineDoneAt < GAMBLE_OPEN_WAIT then return nil end
-            -- 視窗被關掉、寶箱卻沒打開：這次按法沒效。走過去重新互動寶箱叫出視窗，換下一種按法
-            if GAMBLE_DECLINE_STEPS[State.declineTries + 1] == nil then
-                LogError("「不挑戰解除陷阱」的按法都試過了，寶箱還是沒打開，改成暫停，請手動處理")
-                State.gambleManual = true
-            else
-                if not State.declineReopenAt then
-                    Log("強欲陷阱視窗關了，但寶箱 " .. GAMBLE_OPEN_WAIT .. " 秒都沒打開（" .. tostring(State.declineWay)
-                        .. " 沒效），重新互動寶箱叫出視窗")
-                end
-                if not Api.Condition(Cond.occupiedInEvent) and Elapsed() - (State.declineReopenAt or -10) > CHEST_REACT_WAIT then
-                    if ApproachChest(chest) then State.declineReopenAt = Elapsed() end
-                end
-                if Elapsed() - State.declineDoneAt > GAMBLE_OPEN_WAIT + GAMBLE_REOPEN_WAIT then
-                    LogError("重新互動寶箱 " .. GAMBLE_REOPEN_WAIT .. " 秒都叫不出強欲陷阱視窗，改成暫停，請手動處理")
-                    State.gambleManual = true
-                else
-                    return nil
-                end
-            end
+            if Elapsed() - State.declineDoneAt < 3 then return nil end
+            State.gambleActive, State.gambleDiagOn = false, false
+            Log("已放棄強欲陷阱，繼續")
+            return "DUNGEON_LOOT"
         elseif Elapsed() > GAMBLE_WINDOW_WAIT then
             LogError("收到強欲陷阱的訊息，但 " .. GAMBLE_WINDOW_WAIT .. " 秒都沒看到強欲陷阱視窗，改成暫停，請手動處理")
             State.gambleManual = true
@@ -3161,7 +3083,6 @@ local function Transition(next)
         State.diagAt, State.diagSnap, State.diagSeen = nil, {}, {}
         State.diagWin, State.diagMemNoted = nil, false
         State.gambleManual, State.declineTries, State.declineAt, State.declineDoneAt = false, nil, nil, nil
-        State.declineReopenAt, State.declineWay = nil, nil
     end
     State.spotLogged = nil
     State.searchTries, State.lastSearch, State.manualPrompted = 0, nil, false

@@ -13,9 +13,13 @@ configs:
   MaxRounds:
     default: 0
     description: 要刷幾輪（一輪 = 買齊 1 張已解讀 + 1 張未解讀並兩張都挖完），0 = 無限循環
+    min: 0
+    max: 9999
   MaxMaps:
     default: 0
     description: 本次最多跑幾張，0 = 不限
+    min: 0
+    max: 9999
   AutoBuy:
     default: true
     description: 圖不夠時自動到市場板買圖（維持身上 1 張已解讀 + 1 張未解讀）。事前記得在市場板把要買的地圖加入「我的最愛」
@@ -34,24 +38,36 @@ configs:
   MaxMapPrice:
     default: 0
     description: 每張圖最多付多少 gil（AutoBuy 開啟時必填，0 = 未設定，INIT 會停止）
+    min: 0
+    max: 999999999
   GilFloor:
     default: 0
     description: 買完後身上至少保留多少 gil
+    min: 0
+    max: 999999999
   MarketTerritoryId:
     default: 129
     description: 買圖的城市地區 ID（129 = 利姆薩·羅敏薩下層甲板，傳送到該區大水晶）
+    min: 0
+    max: 9999
   MarketAetheryte:
     default: ""
     description: 買圖城市的以太之光名稱（留空 = 依 MarketTerritoryId 自動從遊戲資料取）
   MarketX:
     default: -121
     description: 傳送到大水晶後要走去的市場板位置 X
+    min: -3000
+    max: 3000
   MarketY:
     default: 18
     description: 市場板位置 Y（高度）
+    min: -3000
+    max: 3000
   MarketZ:
     default: 12
     description: 市場板位置 Z
+    min: -3000
+    max: 3000
   FavoritesCallback:
     default: "12 6"
     description: 打開市場板「我的最愛」清單的 callback 參數（實測事件 12 會顯示我的最愛，後面的數字不影響；空白 = 不切換）
@@ -61,36 +77,54 @@ configs:
   FlagWait:
     default: 120
     description: 解讀後等藏寶點旗標的秒數（XivTreasureParty 自動打，或你手動插）
+    min: 0
+    max: 3600
   EnterDungeon:
     default: true
     description: 出現傳送門時是否進入寶物庫
   WalkRadius:
     default: 15
     description: 飛到離旗標多近就下坐騎改走路（飛行停點不準，近距離走路比較準）
+    min: 0
+    max: 200
   DigRadius:
     default: 3
     description: 距離旗標多近開始挖寶
+    min: 0
+    max: 50
   LeashRadius:
     default: 15
     description: 野外戰鬥時離寶箱（觸發陷阱的位置）多遠就走回去，太遠陷阱戰鬥會被重置
+    min: 0
+    max: 200
   FieldLootDelay:
     default: 5
     description: 野外打完怪後等幾秒再開寶箱
+    min: 0
+    max: 120
   PortalWait:
     default: 10
     description: 開箱後等待傳送門出現的秒數
+    min: 0
+    max: 300
   EnemyWait:
     default: 20
     description: 寶物庫戰鬥開始後最多等幾秒找敵人（怪物出現前可能有動畫）
+    min: 0
+    max: 600
   EnemySearchRange:
     default: 100
     description: 寶物庫內掃描敵人的範圍（判斷怪物出現、是否打完；不會選取目標）
+    min: 0
+    max: 500
   UseSprint:
     default: false
     description: 移動時是否使用衝刺
   MaxErrors:
     default: 3
     description: 連續錯誤幾次後停止腳本
+    min: 0
+    max: 100
   DoorName:
     default: "寶物庫的門"
     description: 寶物庫兩扇門的物件名稱（繁中客戶端）
@@ -100,12 +134,18 @@ configs:
   DoorHintWait:
     default: 5
     description: 選門前等幾秒看有沒有「右側／左側的門發光了！」提示
+    min: 0
+    max: 120
   DoorAnimWait:
     default: 10
     description: 互動門之後等開門（或關門）動畫幾秒，動畫結束才走進去
+    min: 0
+    max: 120
   PassageDistance:
     default: 10
     description: 穿過門後再往前走多遠去踩傳送法陣（法陣不能互動、沒有名稱，只能往前走）
+    min: 0
+    max: 100
   GambleMode:
     default: "Ignore"
     description: 強欲陷阱（大／小兩顆魔法球）的處理：Ignore（不互動，等它結束）/ Big（選大）/ Small（選小）

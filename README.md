@@ -25,6 +25,7 @@ SND（Something Need Doing）Lua 腳本，戰士單人循環挖寶與寶物庫�
 
 - SND（Lua 引擎）、vnavmesh（移動）、Lifestream（傳送）、自動輸出 RotationSolver Reborn 或 Wrath Combo（擇一，`RotationPlugin` 預設自動偵測，優先 RSR）、閃避 BossMod 或 BossMod Reborn（擇一，只開 AI 閃避；G15 / G17 用 `BossModPlugin` 選擇，預設優先 BossMod；G12 固定用 BossMod（沒啟用才退回 BossMod Reborn，並停用 BMR 的自動循環））。G15、G17 都支援 RSR，喝藥交給 RSR 處理
 - 建議：[XIV 藏寶圖工具小幫手](https://github.com/cycleapple/xiv-party-treasure-helper)（XivTreasureParty），開啟「解碼後自動開地圖打旗標」，解讀後自動在藏寶點插旗；沒裝就要手動插旗
+  - 它偶爾解讀後不打旗標（只打一次、遊戲沒接受也不重試）：腳本 10 秒沒等到新旗標，會用 `/xldisableplugin`、`/xlenableplugin` 重新載入它，每張圖最多 2 次。插件不能放在 Dalamud 的插件集合（collection）裡，不然指令管不到它
 
 ## 使用的插件版本
 

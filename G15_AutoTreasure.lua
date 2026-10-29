@@ -315,6 +315,14 @@ function Api.PluginInstalled(internalName)
     return false
 end
 
+-- 插件裝了沒、載入了沒：nil = 沒裝，true = 已載入，false = 裝了但沒載入
+function Api.PluginLoaded(internalName)
+    for plugin in luanet.each(Svc.PluginInterface.InstalledPlugins) do
+        if plugin.InternalName == internalName then return plugin.IsLoaded == true end
+    end
+    return nil
+end
+
 function Api.JobId()
     return Player.Job.Id
 end
@@ -1209,21 +1217,82 @@ end
 -- 沒裝或沒開該選項時，等使用者手動插旗（FlagWait 秒）。上一張圖用過的旗標不算，避免拿舊旗標重跑
 -- 旗標可以用：有旗標，而且不是上一張圖的舊旗標；或已等了 5 秒還在同一位置（新圖剛好在同一個藏寶點，
 -- XivTreasureParty 看到藏寶點沒變不會重插，旗標本來就該在原處）
-local function FlagIsFresh()
+-- 旗標是不是新的：位置跟上一張圖挖過的旗標（State.lastFlag）不同才算
+local function FlagIsNew()
     if not Api.IsFlagSet() then return false end
     local last = State.lastFlag
-    if last == nil or Distance2D(Api.FlagPos(), last) > 1 then return true end
-    return Elapsed() > 5
+    return last == nil or Distance2D(Api.FlagPos(), last) > 1
+end
+
+-- 藏寶圖工具小幫手（XivTreasureParty）解讀後偶爾不打旗標：它只在偵測到新圖的那一刻打一次，
+-- 遊戲當下沒接受也不會重試，重新載入插件才會再打。解讀後（或上一次重新載入後）FLAG_RELOAD_WAIT 秒
+-- 還沒有新旗標，就用 Dalamud 的 /xldisableplugin、/xlenableplugin 重新載入它，每張圖最多 FLAG_RELOAD_MAX 次
+local FLAG_PLUGIN      = "XivTreasureParty"
+local FLAG_RELOAD_WAIT = 10
+local FLAG_RELOAD_MAX  = 2
+local FLAG_RELOAD_STEP = 20   -- 停用、啟用各最多等幾秒
+
+-- 重新載入進行中就往下做一步，回傳 true（LOCATE 先不做別的事）；沒有在重新載入回傳 false
+local function ReloadFlagPlugin()
+    local r = State.flagReload
+    if r == nil then return false end
+    local loaded = Api.PluginLoaded(FLAG_PLUGIN)
+    if r.phase == "disable" then
+        if loaded == false then
+            yield("/xlenableplugin " .. FLAG_PLUGIN)
+            r.phase, r.at = "enable", Elapsed()
+        elseif Elapsed() - r.at > FLAG_RELOAD_STEP then
+            LogError("停用藏寶圖工具小幫手 " .. FLAG_RELOAD_STEP .. " 秒都沒反應，不再重新載入")
+            State.flagReload, State.flagReloads, State.flagReloadDoneAt = nil, FLAG_RELOAD_MAX, Elapsed()
+            return false
+        end
+        return true
+    end
+    if loaded == true then
+        Log("藏寶圖工具小幫手已重新載入，等它打旗標")
+        State.flagReload, State.flagReloadDoneAt = nil, Elapsed()
+        return false
+    end
+    if Elapsed() - r.at > FLAG_RELOAD_STEP then
+        LogError("藏寶圖工具小幫手重新啟用 " .. FLAG_RELOAD_STEP .. " 秒還沒載入好，請到 /xlplugins 確認")
+        State.flagReload, State.flagReloads, State.flagReloadDoneAt = nil, FLAG_RELOAD_MAX, Elapsed()
+        return false
+    end
+    return true
 end
 
 function Handlers.LOCATE()
-    if FlagIsFresh() and Api.FlagTerritory() == ELPIS_TERRITORY then
+    if ReloadFlagPlugin() then return nil end
+    local zoneOk = Api.IsFlagSet() and Api.FlagTerritory() == ELPIS_TERRITORY
+    if zoneOk and FlagIsNew() then
         Api.CloseAddon("AreaMap")
         return "TRAVEL"
     end
     if not State.sent then
         Log("等待藏寶點旗標（厄爾庇斯）：XivTreasureParty 會自動打，或請手動插旗")
         State.sent = true
+    end
+    -- 還沒有新旗標：藏寶圖工具小幫手有載入就重新載入它，讓它再打一次
+    local plugin = Api.PluginLoaded(FLAG_PLUGIN)
+    local reloads = State.flagReloads or 0
+    local since = Elapsed() - (State.flagReloadDoneAt or 0)
+    if plugin == true and reloads < FLAG_RELOAD_MAX and since > FLAG_RELOAD_WAIT then
+        State.flagReloads = reloads + 1
+        Log(string.format("%.0f 秒還沒有新的藏寶點旗標，重新載入藏寶圖工具小幫手（第 %d/%d 次）",
+            since, State.flagReloads, FLAG_RELOAD_MAX))
+        yield("/xldisableplugin " .. FLAG_PLUGIN)
+        State.flagReload = { phase = "disable", at = Elapsed() }
+        return nil
+    end
+    -- 重新載入都試過（或沒有這個插件）之後：
+    --   旗標還在上一張圖的位置 → 這張圖剛好又抽到同一個藏寶點，照走
+    --   等滿 FlagWait 秒（重新載入完之後至少再等 FLAG_RELOAD_WAIT 秒）還是沒有 → 報錯
+    if plugin == true and reloads < FLAG_RELOAD_MAX then return nil end
+    if since <= FLAG_RELOAD_WAIT and plugin ~= nil then return nil end
+    if zoneOk and Elapsed() > 5 then
+        Log("旗標跟上一張圖同一個位置，當成又抽到同一個藏寶點")
+        Api.CloseAddon("AreaMap")
+        return "TRAVEL"
     end
     if Elapsed() > Cfg.FlagWait then
         local ok, info = pcall(function()
@@ -2044,6 +2113,12 @@ local function Transition(next)
     if next == "TRAVEL" then State.cofferPos, State.leashing = nil, false end
     if next == "OPEN_COFFER" then State.fieldCleared = false end
     if next == "DUNGEON_SPHERE" then State.summoned, State.summonName = false, nil end
+    if State.current == "LOCATE" and next ~= "FIELD_FIGHT" then
+        -- 離開等旗標的步驟時藏寶圖工具小幫手還在重新載入（停用中）：把它開回來
+        if State.flagReload ~= nil then yield("/xlenableplugin " .. FLAG_PLUGIN) end
+        State.flagReload, State.flagReloads, State.flagReloadDoneAt = nil, 0, nil
+    end
+    if next == "LOCATE" and State.flagReload ~= nil then State.flagReload.at = 0 end   -- 打完怪回來：步驟計時重新算
     Log(State.current .. " → " .. next)
     State.current = next
     State.enteredAt = os.clock()

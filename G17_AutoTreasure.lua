@@ -314,7 +314,7 @@ end
 local Timeout = {
     CHECK_MAP        = 3,
     DECIPHER         = 10,
-    LOCATE           = Cfg.FlagWait,
+    -- LOCATE 不設：自己判斷 FlagWait，還要留時間重新載入藏寶圖工具小幫手
     TRAVEL           = 180,
     DIG              = 8,
     OPEN_COFFER      = 15,
@@ -1320,7 +1320,7 @@ local function ReloadFlagPlugin()
     end
     if loaded == true then
         Log("藏寶圖工具小幫手已重新載入，等它打旗標")
-        State.flagReload, State.flagReloadDoneAt = nil, Elapsed()
+        State.flagReload, State.flagReloadDoneAt, State.flagReloaded = nil, Elapsed(), true
         return false
     end
     if Elapsed() - r.at > FLAG_RELOAD_STEP then
@@ -1334,7 +1334,8 @@ end
 function Handlers.LOCATE()
     if ReloadFlagPlugin() then return nil end
     local zoneOk = Api.IsFlagSet() and G17_ZONES[Api.FlagTerritory()]
-    if zoneOk and FlagIsNew() then
+    -- 插件重新載入後會打開地圖打旗標：地圖又開了就算新旗標（又抽到同一個藏寶點時，位置跟上一張一樣）
+    if zoneOk and (FlagIsNew() or State.flagReloaded and Api.AddonReady("AreaMap")) then
         Api.CloseAddon("AreaMap")
         return "TRAVEL"
     end
@@ -1348,8 +1349,10 @@ function Handlers.LOCATE()
     local since = Elapsed() - (State.flagReloadDoneAt or 0)
     if plugin == true and reloads < FLAG_RELOAD_MAX and since > FLAG_RELOAD_WAIT then
         State.flagReloads = reloads + 1
-        Log(string.format("%.0f 秒還沒有新的藏寶點旗標，重新載入藏寶圖工具小幫手（第 %d/%d 次）",
-            since, State.flagReloads, FLAG_RELOAD_MAX))
+        local now = not Api.IsFlagSet() and "沒有旗標" or zoneOk and "旗標還在上一張圖的位置" or "旗標不在這張圖的地區"
+        Log(string.format("%.0f 秒還沒有新的藏寶點旗標（%s），重新載入藏寶圖工具小幫手（第 %d/%d 次）",
+            since, now, State.flagReloads, FLAG_RELOAD_MAX))
+        Api.CloseAddon("AreaMap")   -- 先關地圖：重新載入後地圖再打開，就知道插件打了旗標
         yield("/xldisableplugin " .. FLAG_PLUGIN)
         State.flagReload = { phase = "disable", at = Elapsed() }
         return nil
@@ -2295,7 +2298,7 @@ local function Transition(next)
     if State.current == "LOCATE" and next ~= "FIELD_FIGHT" then
         -- 離開等旗標的步驟時藏寶圖工具小幫手還在重新載入（停用中）：把它開回來
         if State.flagReload ~= nil then yield("/xlenableplugin " .. FLAG_PLUGIN) end
-        State.flagReload, State.flagReloads, State.flagReloadDoneAt = nil, 0, nil
+        State.flagReload, State.flagReloads, State.flagReloadDoneAt, State.flagReloaded = nil, 0, nil, nil
     end
     if next == "LOCATE" and State.flagReload ~= nil then State.flagReload.at = 0 end   -- 打完怪回來：步驟計時重新算
     Log(State.current .. " → " .. next)

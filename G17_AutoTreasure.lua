@@ -815,8 +815,69 @@ function Api.FindDecipherIndex(name)
     return nil
 end
 
+-- SND 包裝的 IEnumerable（AddonWrapper.AtkValues / Nodes 等）轉成 Lua 陣列。
+-- 那些是 C# 編譯器產生的 iterator，NLua 叫不到它的 GetEnumerator（luanet.each 會出錯），
+-- 所以先丟進 .NET 的 List<object>，再用索引一筆一筆讀。失敗回傳 nil
+function Api.ToLuaList(enumerable)
+    local ok, items = pcall(function()
+        local ListType = luanet.import_type("System.Collections.Generic.List`1[System.Object]")
+        local list = ListType(enumerable)
+        local out = {}
+        for i = 0, list.Count - 1 do
+            local item = list[i]
+            if item == nil then item = list:get_Item(i) end
+            out[#out + 1] = item
+        end
+        return out
+    end)
+    if ok then return items end
+    return nil
+end
+
+-- 視窗上所有看得到的文字。讀不到節點時改讀 AtkValues
+function Api.AddonText(name)
+    local parts = {}
+    pcall(function()
+        local a = Addons.GetAddon(name)
+        for _, node in ipairs(Api.ToLuaList(a.Nodes) or {}) do
+            if EnumName(node.NodeType) == "Text" and node.IsVisible then
+                local t = tostring(node.Text)
+                if t ~= "" and t ~= "nil" then parts[#parts + 1] = t end
+            end
+        end
+    end)
+    if #parts == 0 then
+        pcall(function()
+            local a = Addons.GetAddon(name)
+            for _, v in ipairs(Api.ToLuaList(a.AtkValues) or {}) do
+                local s = tostring(v.ValueString)
+                if s ~= "" and s ~= "nil" and s ~= "0" then parts[#parts + 1] = s end
+            end
+        end)
+    end
+    return table.concat(parts, " ")
+end
+
+-- 小隊邀請也是 SelectYesno，不看內容按「是」會把它接受掉：一律拒絕。文字取自繁中版遊戲資料 Addon 表：
+-- 120「確定要加入…的小隊嗎？」；121「確定要拒絕…發來的組隊邀請嗎？」是拒絕的再確認，要按「是」
+function Api.DeclinePartyInvite()
+    if not Api.AddonReady("SelectYesno") then return false end
+    local q = Api.AddonText("SelectYesno")
+    if q:find("確定要加入", 1, true) and q:find("的小隊嗎", 1, true) then
+        Log("拒絕小隊邀請")
+        yield("/callback SelectYesno true 1")
+        return true
+    end
+    if q:find("確定要拒絕", 1, true) and q:find("組隊邀請", 1, true) then
+        yield("/callback SelectYesno true 0")
+        return true
+    end
+    return false
+end
+
 function Api.ConfirmYes()
     if Api.AddonReady("SelectYesno") then
+        if Api.DeclinePartyInvite() then return false end
         yield("/callback SelectYesno true 0")
         return true
     end
@@ -2336,6 +2397,7 @@ while true do
     if Api.Condition(Cond.betweenAreas) and not waitsOnLoading then
         yield("/wait 0.5")
     else
+        pcall(Api.DeclinePartyInvite)   -- 不管在哪個步驟，有小隊邀請就拒絕
         -- 野外被怪物纏上：騎著坐騎時直接飛走，不然先切到 FIELD_FIGHT 打完再回來
         if INTERRUPTIBLE[State.current] and Api.Condition(Cond.inCombat) and not Api.Condition(Cond.dead)
             and not Api.Condition(Cond.mounted) and not InDuty() then

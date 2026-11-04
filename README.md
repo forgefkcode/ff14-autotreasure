@@ -96,6 +96,7 @@ G12 選門型每一層（第 1 層進去先等 10 秒）：走到寶箱旁互動
 - G15：`ChestName`、`PortalName`、`SphereName`
 - G12：`ChestName`、`PortalName`、`DoorName`、`SphereName`（兩種寶物庫的物件名稱都要對）
 - G14：`ChestName`、`PortalName`、`DoorName`
+- 這些物件名稱的設定值如果是空白，腳本會改用預設名稱
 
 ## 狀態
 

@@ -306,6 +306,17 @@ local Cfg = {
     ExitPortalName   = Config.Get("ExitPortalName"),
     EchoLogs         = Config.Get("EchoLogs"),
 }
+-- SND 更新腳本時會保留舊的設定值，名稱存成空白就永遠找不到物件（例如挖到寶箱卻一直重挖）：空白時用預設名稱
+for k, v in pairs({
+    DoorName = "寶物庫的門",
+    GambleBigName = "大",
+    GambleSmallName = "小",
+    ChestName = "寶箱",
+    PortalName = "傳送魔紋",
+    ExitPortalName = "退出點",
+}) do
+    if Cfg[k] == nil or Cfg[k] == "" then Cfg[k] = v end
+end
 if Cfg.DungeonChestName == nil or Cfg.DungeonChestName == "" then
     Cfg.DungeonChestName = Cfg.ChestName
 end

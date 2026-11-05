@@ -2099,22 +2099,6 @@ function Api.TargetableObjects(name)
     return list
 end
 
--- 選取指定物件，太遠就先走過去，到了再互動（同 ApproachAndInteract，但對象是已經挑好的物件）
-local function ApproachAndInteractObject(obj)
-    if obj == nil or not pcall(function() Svc.Targets.Target = obj end) then return false end
-    local t = Entity.Target
-    if t == nil then return false end
-    if t.DistanceTo ~= nil and t.DistanceTo > 3 then
-        if not Api.NavRunning() then yield("/vnav movetarget") end
-        return false
-    end
-    Api.NavStop()
-    Api.WrathOff()   -- 互動保護
-    if not Dismount() then return false end
-    Api.InteractTarget()
-    return true
-end
-
 function Handlers.DUNGEON_INIT()
     if Api.Condition(Cond.betweenAreas) then
         if TimedOut("DUNGEON_INIT") then return "ERROR" end
@@ -2522,12 +2506,15 @@ local function ApproachDoors()
     Api.VaultMoveTo(target.X, target.Y, target.Z)
 end
 
--- 互動門沒反應時的重試：直接走到門的最近可走點，DOOR_INTERACT_RANGE 以內、或 DOOR_STALL 秒沒前進（被門擋住）才互動
+-- 走到選好的門旁再互動：直接走到門的最近可走點（不用 /vnav movetarget + DistanceTo：門物件比地板高 4 碼多，
+-- 高度也算進去的話站到門前也到不了互動距離，會一直往門裡走）。
+-- 平面距離 DOOR_INTERACT_RANGE 以內，或 DOOR_STALL 秒沒前進（被門擋住）就互動；卡在 DOOR_INTERACT_FAR 外不隔空互動。回傳 true 表示已送出互動
 local DOOR_INTERACT_RANGE = 2.5
 local DOOR_STALL          = 2
+local DOOR_INTERACT_FAR   = 6
 local DOOR_TRIES          = 3
 
-local function ApproachDoorCloser()
+local function ApproachDoor()
     local me, pos = Api.PlayerPos(), State.doorPos
     local dist = Distance2D(me, pos)
     if State.doorMoveAt == nil or Distance2D(me, State.doorMovePos) > 0.3 then
@@ -2537,10 +2524,21 @@ local function ApproachDoorCloser()
         if not Api.NavRunning() then Api.VaultMoveTo(pos.X, pos.Y, pos.Z) end
         return false
     end
+    if dist > DOOR_INTERACT_FAR then
+        -- 卡在半路（閃避 AI 拉住等）：暫時關閃避 AI 重新走，走不到由 DUNGEON_DOOR 逾時報錯
+        Log(string.format("走向門卡在 %.1f 外，重新走過去", dist))
+        Api.NavStop()
+        if State.vbmAiOn then Api.SuspendAi() end
+        Api.VaultMoveTo(pos.X, pos.Y, pos.Z)
+        State.doorMovePos, State.doorMoveAt = me, Elapsed()
+        return false
+    end
     Api.NavStop()
     if Api.Condition(Cond.occupiedInEvent) then return false end
     if not pcall(function() Svc.Targets.Target = State.doorObj end) then return false end
-    Log(string.format("走近門（距離 %.1f），再互動一次（第 %d 次）", dist, State.doorTries + 1))
+    Api.WrathOff()   -- 互動保護
+    if not Dismount() then return false end
+    Log(string.format("走到門旁（距離 %.1f），互動（第 %d 次）", dist, State.doorTries + 1))
     Api.InteractTarget()
     return true
 end
@@ -2583,7 +2581,7 @@ function Handlers.DUNGEON_DOOR()
             return nil
         end
         if State.doorApproachLog ~= nil then
-            Api.NavStop()   -- 走到門附近、門可以互動了：停下來選門（之後由 ApproachAndInteractObject 走到門旁邊）
+            Api.NavStop()   -- 走到門附近、門可以互動了：停下來選門（之後由 ApproachDoor 走到門旁邊）
             State.doorApproachLog = nil
         end
         if #doors > 1 then
@@ -2599,7 +2597,7 @@ function Handlers.DUNGEON_DOOR()
             Log("第 " .. State.stage .. " 層選門：沒有提示，" .. (Cfg.DoorChoice == "Random" and "隨機" or "第一個") .. "（" .. idx .. "/" .. #doors .. "）")
         end
         -- 記下門和選門前站的位置（門開了之後物件可能消失，之後只用座標）
-        State.doorTries = 0
+        State.doorTries, State.doorMoveAt = 0, nil
         State.doorObj = door
         State.doorPos = Vector3(door.Position.X, door.Position.Y, door.Position.Z)
         -- 走進門的方向用「這層寶箱 → 門」（寶箱在房間中間；角色可能已經走到門邊，用站的位置算方向會偏）
@@ -2608,12 +2606,7 @@ function Handlers.DUNGEON_DOOR()
     end
 
     -- 互動前清掉「門有反應」的證據，DUNGEON_DOOR_WAIT 用來確認這次互動真的有效
-    if (State.doorTries or 0) == 0 then
-        if not Api.Condition(Cond.occupiedInEvent) and ApproachAndInteractObject(State.doorObj) then
-            State.doorOpened, State.doorTries = false, 1
-            return "DUNGEON_DOOR_WAIT"
-        end
-    elseif ApproachDoorCloser() then
+    if ApproachDoor() then
         State.doorOpened, State.doorTries = false, State.doorTries + 1
         return "DUNGEON_DOOR_WAIT"
     end

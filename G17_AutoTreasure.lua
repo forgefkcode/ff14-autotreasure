@@ -8,7 +8,7 @@ plugin_dependencies:
 - Lifestream
 function_chat_filters:
   OnChatMessage:
-    message_regex: "將陷阱引來的魔物全部打倒了|門發光了|強欲陷阱發動了|打開了.*大門"
+    message_regex: "將陷阱引來的魔物全部打倒了|門發光了|強欲陷阱發動了|打開了.*大門|#繼續"
 configs:
   MaxRounds:
     default: 0
@@ -146,9 +146,6 @@ configs:
     description: 穿過門後再往前走多遠去踩傳送法陣（法陣不能互動、沒有名稱，只能往前走）
     min: 0
     max: 100
-  GambleMode:
-    default: "Ignore"
-    description: 強欲陷阱（大／小兩顆魔法球）的處理：Ignore（不互動，等它結束）/ Big（選大）/ Small（選小）
   GambleBigName:
     default: "大"
     description: 強欲陷阱「大」魔法球的物件名稱
@@ -297,7 +294,6 @@ local Cfg = {
     DoorHintWait     = Config.Get("DoorHintWait"),
     DoorAnimWait     = Config.Get("DoorAnimWait"),
     PassageDistance  = Config.Get("PassageDistance"),
-    GambleMode       = Config.Get("GambleMode"),
     GambleBigName    = Config.Get("GambleBigName"),
     GambleSmallName  = Config.Get("GambleSmallName"),
     ChestName        = Config.Get("ChestName"),
@@ -1162,7 +1158,7 @@ end
 -- 聊天訊息觸發（開頭 function_chat_filters 限制只有這幾種訊息才會呼叫；函式只設旗標，不做別的事）：
 --   「將陷阱引來的魔物全部打倒了！」→ 野外陷阱打完，去開寶箱
 --   「右側的門發光了！」「左側的門發光了！」→ 寶物庫裡只會剩一扇門可以互動，選那扇
---   「強欲陷阱發動了！」→ 出現大／小兩顆魔法球，依 GambleMode 處理
+--   「強欲陷阱發動了！」→ 一律放棄（DUNGEON_GAMBLE）
 function OnChatMessage()
     local ok, msg = pcall(function() return tostring(TriggerData.message) end)
     if not ok or msg == nil then return end
@@ -1176,6 +1172,8 @@ function OnChatMessage()
         State.doorHint = "左側"
     elseif msg:find("強欲陷阱發動了", 1, true) then
         State.gambleActive = true
+    elseif msg:match("^%s*#繼續%s*$") then
+        State.resumeRequested = true   -- 你在聊天框輸入 /echo #繼續（整行只有這幾個字；腳本自己的提示訊息開頭是 [G17]，不會觸發）
     end
 end
 
@@ -2077,7 +2075,8 @@ end
 -- 每一層：
 --   DUNGEON_CHEST     跑到寶箱（入口離寶箱有一段距離）並互動，觸發陷阱
 --   DUNGEON_COMBAT    選一次最近的敵人，交給 RSR / Wrath 打，BossMod AI 閃避
---   DUNGEON_LOOT      等寶箱自動打開（寶物庫的寶箱不用互動）、處理強欲陷阱
+--   DUNGEON_LOOT      等寶箱自動打開（寶物庫的寶箱不用互動）
+--   DUNGEON_GAMBLE    強欲陷阱：一律放棄（按「不挑戰解除陷阱」），放棄不了才暫停讓你手動處理
 --   第 1～4 層：
 --     DUNGEON_DOOR      兩扇「寶物庫的門」選一扇：有「右側／左側的門發光了！」時只剩一扇可互動，選那扇；沒有就隨機
 --     DUNGEON_DOOR_WAIT 等開門（或關門）動畫結束
@@ -2114,6 +2113,20 @@ function Handlers.DUNGEON_INIT()
     Api.WrathOn()
     Log("進入寶物庫，開啟自動輸出與閃避")
     return "DUNGEON_CHEST"
+end
+
+-- 強欲陷阱的視窗（「挑戰解除陷阱／不挑戰解除陷阱」）。名稱取自 FFXIVClientStructs（AgentId.TreasureHighLow，
+-- 註解 Gambler's Lure）與 ECommons 的 AddonMaster.TreasureHighLow（按鈕 46 挑戰、47 不挑戰直接開箱）
+local GAMBLE_WINDOW = "TreasureHighLow"
+
+-- 強欲陷阱出現了沒：聊天「強欲陷阱發動了」，或強欲陷阱視窗開著
+local function GambleDetected()
+    if State.gambleActive then return true end
+    if Api.AddonReady(GAMBLE_WINDOW) then
+        State.gambleActive = true
+        return true
+    end
+    return false
 end
 
 local VAULT_ENTRY_WAIT     = 10   -- 剛進寶物庫（第 1 層）可以操作後，先等幾秒才往寶箱走（G12 實測要等）
@@ -2224,6 +2237,10 @@ end
 function Handlers.DUNGEON_CHEST()
     if not InDuty() then return "DUNGEON_EXIT" end
     if Api.Condition(Cond.inCombat) then return "DUNGEON_COMBAT" end
+    if GambleDetected() then
+        Log("開寶箱觸發強欲陷阱")
+        return "DUNGEON_GAMBLE"
+    end
 
     -- 進入這一層會有一段不能操作的動畫：等動畫結束才開始（只等這一次），先停掉動畫前的導航、從新位置重新規劃路徑
     if State.floorReadyAt == nil then
@@ -2360,56 +2377,14 @@ function Handlers.DUNGEON_COMBAT()
     return "DUNGEON_LOOT"
 end
 
--- 強欲陷阱：出現大／小兩顆魔法球。GambleMode = Big / Small 時互動那一顆（每一輪一次），Ignore 時不互動。
--- 魔法球消失滿 5 秒（或整體超過 120 秒）就算結束。回傳 true 表示還在進行中
-local function HandleGamble()
-    if not State.gambleActive then return false end
-    State.gambleSince = State.gambleSince or Elapsed()
-    local big, small = Api.GetEntity(Cfg.GambleBigName), Api.GetEntity(Cfg.GambleSmallName)
-    if big ~= nil or small ~= nil then
-        State.gambleGoneAt = nil
-        if Cfg.GambleMode == "Big" or Cfg.GambleMode == "Small" then
-            local name = Cfg.GambleMode == "Big" and Cfg.GambleBigName or Cfg.GambleSmallName
-            if not State.gambleChosen and not Api.Condition(Cond.occupiedInEvent) then
-                if ApproachAndInteract(name) then
-                    State.gambleChosen = true
-                    Log("強欲陷阱：選「" .. name .. "」")
-                end
-            end
-            Api.ConfirmYes()
-        elseif not State.gambleLogged then
-            Log("強欲陷阱：GambleMode = Ignore，不互動，等它結束")
-            State.gambleLogged = true
-        end
-    else
-        State.gambleChosen = false   -- 魔法球消失：下一輪出現時可以再選
-        State.gambleGoneAt = State.gambleGoneAt or Elapsed()
-        if Elapsed() - State.gambleGoneAt >= 5 then
-            State.gambleActive, State.gambleSince, State.gambleGoneAt, State.gambleLogged = false, nil, nil, false
-            Log("強欲陷阱結束")
-            return false
-        end
-    end
-    if Elapsed() - State.gambleSince > 120 then
-        State.gambleActive, State.gambleSince, State.gambleGoneAt, State.gambleLogged = false, nil, nil, false
-        Log("強欲陷阱超過 120 秒，不再等")
-        return false
-    end
-    return true
-end
-
 -- 等寶箱自動打開（寶物庫的寶箱不用互動）、處理強欲陷阱；寶箱打開後 10 秒沒有新寶箱、強欲陷阱也結束了，才去選門（第 5 層則離開）
 function Handlers.DUNGEON_LOOT()
     if not InDuty() then return "DUNGEON_EXIT" end
     if Api.Condition(Cond.inCombat) then return "DUNGEON_COMBAT" end   -- 開箱又觸發額外的怪
     if State.lastChestAt == nil then State.lastChestAt = Elapsed() end
-    if HandleGamble() then
-        State.lastChestAt = Elapsed()
-        if TimedOut("DUNGEON_LOOT") then return "ERROR" end
-        return nil
-    end
+    if GambleDetected() then return "DUNGEON_GAMBLE" end
 
-    -- 第 5 層（最終區）：先打完怪，寶箱要自己走過去開（不會自動打開）。開了之後可能出現強欲陷阱（上面會處理）
+    -- 第 5 層（最終區）：先打完怪，寶箱要自己走過去開（不會自動打開）。開了之後可能出現強欲陷阱（上面會轉去放棄）
     if State.stage >= MAX_STAGES then
         local chest = Api.GetEntity(Cfg.DungeonChestName)
         if chest ~= nil then
@@ -2446,6 +2421,89 @@ local function EntryLockFlags()
         if Api.Condition(id) then table.insert(on, id) end
     end
     return on
+end
+
+-- 遇到強欲陷阱一律放棄（看不到卡牌數字，猜不了）＝按「不挑戰解除陷阱」直接開箱。
+-- callback 參數取自 McVaxius/LootGoblin（國際版插件實際觀察；繁中版尚未驗證）：不挑戰／收手 = TreasureHighLow true 1，
+-- 點「不挑戰」時遊戲送出的是 false -2 → true 1。依序試：true 1 → (false -2, true 1) → true 1，每次間隔 GAMBLE_DECLINE_GAP 秒。
+-- 保險（改成暫停：停止移動、不互動、不計逾時，你自己處理完後視窗和魔法球消失滿 5 秒，或輸入 /echo #繼續，就回到 DUNGEON_LOOT）：試完視窗還在；大／小魔法球變成可互動（表示按成挑戰了）；只有聊天訊息、視窗 GAMBLE_WINDOW_WAIT 秒都沒出現
+local GAMBLE_DECLINE_GAP  = 2
+local GAMBLE_WINDOW_WAIT  = 10
+local GAMBLE_DECLINE_STEPS = {
+    { "true 1" },
+    { "false -2", "true 1" },
+    { "true 1" },
+}
+
+local GAMBLE_NAME_HINT = 15   -- 進入暫停幾秒後還看不到魔法球，就提示可能名稱不對
+
+function Handlers.DUNGEON_GAMBLE()
+    if not InDuty() then return "DUNGEON_EXIT" end
+
+    -- 一律放棄：按「不挑戰解除陷阱」。放棄不了才往下走到暫停（手動處理）
+    if not State.gambleManual then
+        local orbs = Api.GetEntity(Cfg.GambleBigName) ~= nil or Api.GetEntity(Cfg.GambleSmallName) ~= nil
+        if orbs then
+            LogError("大／小魔法球變成可以互動了（可能按成「挑戰」），改成暫停，請手動處理")
+            State.gambleManual = true
+        elseif Api.AddonReady(GAMBLE_WINDOW) then
+            Api.NavStop()
+            if Elapsed() - (State.declineAt or -10) >= GAMBLE_DECLINE_GAP then
+                State.declineTries = (State.declineTries or 0) + 1
+                local step = GAMBLE_DECLINE_STEPS[State.declineTries]
+                if step == nil then
+                    LogError("按了 " .. #GAMBLE_DECLINE_STEPS .. " 次「不挑戰」，強欲陷阱視窗還在，改成暫停，請手動處理")
+                    State.gambleManual = true
+                else
+                    Log("強欲陷阱：放棄，按「不挑戰解除陷阱」（第 " .. State.declineTries .. " 次：" .. table.concat(step, " → ") .. "）")
+                    for k, args in ipairs(step) do
+                        if k > 1 then yield("/wait 0.3") end
+                        yield("/callback " .. GAMBLE_WINDOW .. " " .. args)
+                    end
+                    State.declineAt = Elapsed()
+                end
+            end
+            if not State.gambleManual then return nil end
+        elseif (State.declineTries or 0) > 0 then
+            -- 視窗關了：放棄成功，等寶箱打開再回去收尾、選門
+            State.declineDoneAt = State.declineDoneAt or Elapsed()
+            if Elapsed() - State.declineDoneAt < 3 then return nil end
+            State.gambleActive = false
+            Log("已放棄強欲陷阱，繼續")
+            return "DUNGEON_LOOT"
+        elseif Elapsed() > GAMBLE_WINDOW_WAIT then
+            LogError("收到強欲陷阱的訊息，但 " .. GAMBLE_WINDOW_WAIT .. " 秒都沒看到強欲陷阱視窗，改成暫停，請手動處理")
+            State.gambleManual = true
+        else
+            return nil   -- 等強欲陷阱視窗出現
+        end
+    end
+
+    if not State.gamblePauseLogged then
+        Api.NavStop()   -- 寶物庫內自動輸出和閃避維持開著，只停止移動
+        Log("強欲陷阱出現，腳本暫停：請自己操作（挑戰／不挑戰、選大／小）。強欲陷阱結束後自動繼續，或輸入 /echo #繼續")
+        State.gamblePauseLogged = true
+    end
+    local function Resume(reason)
+        State.gambleActive, State.resumeRequested = false, false
+        Log(reason .. "，腳本繼續")
+        return "DUNGEON_LOOT"
+    end
+    if State.resumeRequested then return Resume("收到 #繼續") end
+    if Api.AddonReady(GAMBLE_WINDOW) or Api.GetEntity(Cfg.GambleBigName) ~= nil or Api.GetEntity(Cfg.GambleSmallName) ~= nil then
+        State.gambleSeen, State.gambleGoneAt = true, nil
+        return nil
+    end
+    -- 還沒看到強欲陷阱視窗或魔法球：一直等，不會自己繼續
+    if not State.gambleSeen then
+        if not State.gambleNameHinted and Elapsed() > GAMBLE_NAME_HINT then
+            Log("看不到強欲陷阱視窗或「" .. Cfg.GambleBigName .. "」「" .. Cfg.GambleSmallName .. "」魔法球，處理完請輸入 /echo #繼續")
+            State.gambleNameHinted = true
+        end
+        return nil
+    end
+    State.gambleGoneAt = State.gambleGoneAt or Elapsed()
+    if Elapsed() - State.gambleGoneAt >= 5 then return Resume("強欲陷阱結束") end
 end
 
 -- 門還不能互動（離太遠，Api.TargetableObjects 找不到）時，先走到門附近：
@@ -2547,6 +2605,7 @@ end
 -- 沒有提示就先等 DoorHintWait 秒，之後依 DoorChoice 選（Random 隨機 / First 第一個）
 function Handlers.DUNGEON_DOOR()
     if not InDuty() then return "DUNGEON_EXIT" end
+    if GambleDetected() then return "DUNGEON_GAMBLE" end   -- 寶箱打開後比較晚才出現強欲陷阱
     if Api.ConfirmYes() then return nil end
     -- 剛進選門步驟：停掉戰鬥、走向寶箱時留下的導航（導航一直在跑，ApproachDoors 會一直等它結束）
     if not State.doorNavCleared then
@@ -2861,6 +2920,11 @@ local function Transition(next)
     State.passLastPos, State.passTries = nil, 0
     State.passAnim, State.passAnimEnd, State.passAnimAt, State.passMovePos, State.passMoveAt = false, nil, nil, nil, nil
     if next == "DUNGEON_CHEST" then State.doorHint, State.gambleActive = nil, false end
+    if next == "DUNGEON_GAMBLE" then
+        State.resumeRequested, State.gambleSeen, State.gambleGoneAt = false, false, nil
+        State.gamblePauseLogged, State.gambleNameHinted = false, false
+        State.gambleManual, State.declineTries, State.declineAt, State.declineDoneAt = false, nil, nil, nil
+    end
     State.spotLogged = nil
     State.searchTries, State.lastSearch, State.manualPrompted = 0, nil, false
 end

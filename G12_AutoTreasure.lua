@@ -154,6 +154,9 @@ configs:
   GambleMode:
     default: "Pause"
     description: G12 不看這個設定：選門型遇到強欲陷阱一律自動放棄（不挑戰），放棄不了才暫停讓你手動處理
+  GamblePlay:
+    default: true
+    description: 強欲陷阱自動玩：裝了私人 BossMod.Maps（強欲陷阱模組）時照它讀到的牌面自動挑戰、選大小、收手；false、沒有模組資料或任何一步失敗都改成放棄
   GambleBigName:
     default: "大"
     description: 強欲陷阱「大」魔法球的物件名稱
@@ -317,6 +320,7 @@ local Cfg = {
     DoorAnimWait     = Config.Get("DoorAnimWait"),
     PassageDistance  = Config.Get("PassageDistance"),
     GambleMode       = Config.Get("GambleMode"),
+    GamblePlay       = Config.Get("GamblePlay"),
     GambleBigName    = Config.Get("GambleBigName"),
     GambleSmallName  = Config.Get("GambleSmallName"),
     GambleDiag       = Config.Get("GambleDiag"),
@@ -1193,6 +1197,16 @@ function OnChatMessage()
     local ok, msg = pcall(function() return tostring(TriggerData.message) end)
     if not ok or msg == nil then return end
     if msg:sub(1, 5) == "[G12]" then return end   -- 腳本自己印的訊息（含診斷轉印的聊天內容）不處理
+    if msg:find("VaultHL", 1, true) then
+        -- BossMod.Maps 強欲陷阱模組的狀態（見 PlayGamble）：「VaultHL phase=… n=… x=… card=… pick=… act=… | 說明」
+        local hl = { at = os.clock(), text = msg:match("|%s*(.-)%s*$") or "" }
+        for k, v in msg:gmatch("(%a+)=(%w+)") do hl[k] = v end
+        hl.n, hl.x, hl.card = tonumber(hl.n) or 0, tonumber(hl.x) or 0, tonumber(hl.card) or 0
+        State.hlSeq = (State.hlSeq or 0) + 1
+        hl.seq = State.hlSeq
+        if hl.phase == "ready" then State.hlReady = true else State.hl = hl end
+        return
+    end
     if State.gambleDiagOn and #State.gambleChat < 60 then table.insert(State.gambleChat, msg) end
     if msg:find("將陷阱引來的魔物全部打倒了", 1, true) then
         State.fieldCleared = true
@@ -2745,8 +2759,111 @@ local GAMBLE_DECLINE_STEPS = {
 
 local GAMBLE_NAME_HINT = 15   -- 進入暫停幾秒後還看不到魔法球，就提示可能名稱不對
 
+-- 強欲陷阱自動玩（GamblePlay = true）：要裝私人的 BossMod.Maps（強欲陷阱模組）。模組讀到伺服器送來的牌面後，每次狀態改變
+-- 就在聊天框印一行「VaultHL phase=… n=第幾次 x=倍數 card=牌面 pick=… act=…」（OnChatMessage 收進 State.hl），這裡照 act 做：
+--   challenge：按「挑戰解除陷阱」（TreasureHighLow true 0，繁中版未驗證：HL_CHALLENGE_WAIT 秒視窗還在就改成放棄）
+--   cashout  ：交給下面的放棄流程按「不挑戰解除陷阱」＝收手
+--   high/low ：走到「大」／「小」魔法球旁互動，確認框按「是」
+--   done     ：結束（全部成功或失敗），等寶箱反應後回 DUNGEON_LOOT
+-- 回傳 false 交給放棄流程（沒開、沒有模組資料、建議收手、挑戰按不下去）；nil 繼續等；字串是下一步。
+-- 玩到一半出狀況（按了挑戰卻沒開始、魔法球互動沒反應、太久沒有新訊息）就改成暫停讓你手動處理
+local HL_DATA_WAIT      = 5    -- 視窗出現後最多等幾秒拿到模組的建議
+local HL_CHALLENGE_WAIT = 6
+local HL_PICK_GAP       = 4    -- 互動魔法球後幾秒沒反應就再互動一次
+local HL_PICK_TRIES     = 3
+local HL_ORB_RANGE      = 2.5
+local HL_STALE          = 30   -- 玩到一半、沒有視窗時，幾秒沒有新的模組訊息就改成暫停
+
+local function PlayGamble()
+    if not Cfg.GamblePlay or State.hlGiveUp then return false end
+    local hl = State.hl
+    local function Manual(reason)
+        LogError("強欲陷阱：" .. reason .. "，改成暫停，請手動處理")
+        State.gambleManual = true
+        return false
+    end
+
+    if Api.AddonReady(GAMBLE_WINDOW) then
+        Api.NavStop()
+        State.hlWindowAt = State.hlWindowAt or Elapsed()
+        -- 這次強欲陷阱的建議：開始（強欲陷阱發動了）或上一次成功時印的 decide
+        local ready = hl ~= nil and hl.phase == "decide" and hl.at >= State.gambleClock - 15
+        if not ready then
+            if Elapsed() - State.hlWindowAt < HL_DATA_WAIT then return nil end
+            Log(State.hlReady and "強欲陷阱：沒收到 BossMod 的牌面建議，放棄" or "強欲陷阱：沒收到 BossMod 強欲陷阱模組的訊息（沒裝或沒載入），放棄")
+            State.hlGiveUp = true
+            return false
+        end
+        if hl.act == "cashout" then
+            Log("強欲陷阱：" .. hl.text .. "，收手")
+            State.hlGiveUp = true
+            return false
+        end
+        if hl.act ~= "challenge" then return nil end
+        if State.hlChallengeAt == nil then
+            Log("強欲陷阱：" .. hl.text .. "，按「挑戰解除陷阱」")
+            yield("/callback " .. GAMBLE_WINDOW .. " true 0")
+            State.hlChallengeAt, State.hlPlaying = Elapsed(), true
+        elseif Elapsed() - State.hlChallengeAt > HL_CHALLENGE_WAIT then
+            LogError("強欲陷阱：按了「挑戰解除陷阱」" .. HL_CHALLENGE_WAIT .. " 秒視窗還在（按鈕參數不對），改成放棄")
+            State.hlGiveUp = true
+            return false
+        end
+        return nil
+    end
+    State.hlWindowAt, State.hlChallengeAt = nil, nil
+    if not State.hlPlaying then return false end   -- 還沒開始玩：交給放棄流程等視窗
+
+    if hl.phase == "done" then
+        State.hlDoneAt = State.hlDoneAt or Elapsed()
+        if Elapsed() - State.hlDoneAt < 3 then return nil end
+        State.gambleActive, State.hlPlaying = false, false
+        Log("強欲陷阱結束：" .. hl.text .. "，繼續")
+        return "DUNGEON_LOOT"
+    end
+
+    if hl.phase == "pick" and (hl.act == "high" or hl.act == "low") then
+        if Api.ConfirmYes() then return nil end   -- 「要選擇「大」嗎？」按「是」
+        if hl.seq ~= State.hlPickSeq then
+            State.hlPickSeq, State.hlPickTries, State.hlPickAt = hl.seq, 0, nil
+        end
+        local name = hl.act == "high" and Cfg.GambleBigName or Cfg.GambleSmallName
+        local orb = Api.GetEntity(name)
+        if orb == nil then
+            if os.clock() - hl.at > 15 then return Manual("「" .. name .. "」魔法球 15 秒都不能互動") end
+            return nil
+        end
+        if State.hlPickAt ~= nil and Elapsed() - State.hlPickAt < HL_PICK_GAP then return nil end
+        local me = Api.PlayerPos()
+        if Distance2D(me, orb.Position) > HL_ORB_RANGE then
+            if not Api.NavRunning() then Api.VaultMoveTo(orb.Position.X, orb.Position.Y, orb.Position.Z) end
+            return nil
+        end
+        Api.NavStop()
+        if State.hlPickTries >= HL_PICK_TRIES then
+            return Manual("互動「" .. name .. "」" .. HL_PICK_TRIES .. " 次都沒反應")
+        end
+        if pcall(function() Svc.Targets.Target = orb end) then
+            State.hlPickTries, State.hlPickAt = State.hlPickTries + 1, Elapsed()
+            Log(string.format("強欲陷阱：牌面 %d → 選「%s」", hl.card, name))
+            Api.InteractTarget()
+        end
+        return nil
+    end
+
+    -- 等翻牌、等結果、等下一個視窗
+    if os.clock() - hl.at > HL_STALE then
+        return Manual(HL_STALE .. " 秒沒有新的牌面訊息（目前：" .. hl.text .. "）")
+    end
+    return nil
+end
+
 function Handlers.DUNGEON_GAMBLE()
     if not InDuty() then return "DUNGEON_EXIT" end
+    if not State.gambleManual then
+        local r = PlayGamble()
+        if r ~= false then return r end
+    end
 
     -- 一律放棄：按「不挑戰解除陷阱」。放棄不了才往下走到暫停（手動處理）
     if not State.gambleManual then
@@ -3370,6 +3487,8 @@ local function Transition(next)
         State.diagAt, State.diagSnap, State.diagSeen = nil, {}, {}
         State.diagWin, State.diagMemNoted = nil, false
         State.gambleManual, State.declineTries, State.declineAt, State.declineDoneAt = false, nil, nil, nil
+        State.gambleClock, State.hlGiveUp, State.hlPlaying, State.hlDoneAt = os.clock(), false, false, nil
+        State.hlWindowAt, State.hlChallengeAt, State.hlPickSeq, State.hlPickTries, State.hlPickAt = nil, nil, nil, 0, nil
     end
     State.spotLogged = nil
     State.searchTries, State.lastSearch, State.manualPrompted = 0, nil, false
